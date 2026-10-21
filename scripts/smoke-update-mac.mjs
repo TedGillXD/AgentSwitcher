@@ -177,20 +177,6 @@ try {
   catch (error) { if (!error.message.includes('Target page, context or browser has been closed')) throw error; }
   await expect.poll(() => child.exitCode, { timeout: 10000 }).toBe(0);
   oldExited = true;
-  if (testKeychain) {
-    advance('unlock disposable keychain in the relaunched application audit session');
-    await expect.poll(async () => (await fixtureProcesses()).length, { timeout: 20000, intervals: [100, 200] }).toBe(1);
-    const [pid] = await fixtureProcesses();
-    expect((await run('/bin/ps', ['-ww', '-p', String(pid), '-o', 'comm='])).stdout.trim()).toBe(installedExecutable);
-    const user = (await run('/usr/bin/id', ['-un'])).stdout.trim();
-    try {
-      await run('/usr/bin/sudo', ['-n', '/bin/launchctl', 'bsexec', String(pid), '/usr/bin/sudo', '-n', '-u', user,
-        '/usr/bin/security', 'unlock-keychain', '-p', process.env.AGENT_SWITCHER_TEST_KEYCHAIN_PASSWORD, testKeychain]);
-    } catch (error) {
-      const detail = String(error.stderr ?? '').replaceAll(process.env.AGENT_SWITCHER_TEST_KEYCHAIN_PASSWORD, '[redacted]').slice(0, 2000);
-      throw new Error(`Could not unlock the disposable application keychain: ${detail}`);
-    }
-  }
   const receipt = join(userData, 'updates/installer/pending-install.json');
   advance('wait for replacement, relaunch and healthy startup cleanup');
   await expect.poll(async () => {

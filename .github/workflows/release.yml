@@ -119,7 +119,7 @@ jobs:
           # them to share this disposable test password without a GUI prompt.
           fixture_password="$(openssl rand -base64 24)"
           echo "::add-mask::$fixture_password"
-          security add-generic-password -a AgentSwitcher -s 'AgentSwitcher Safe Storage' -w "$fixture_password" -A "$keychain"
+          security add-generic-password -a 'AgentSwitcher Key' -s 'AgentSwitcher Safe Storage' -w "$fixture_password" -A "$keychain"
           echo "AGENT_SWITCHER_TEST_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
           echo "AGENT_SWITCHER_TEST_KEYCHAIN_PASSWORD=$keychain_password" >> "$GITHUB_ENV"
           # LaunchServices restarts the fixture in the GUI audit session;
