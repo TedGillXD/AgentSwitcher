@@ -115,6 +115,11 @@ jobs:
           security unlock-keychain -p "$keychain_password" "$keychain"
           security list-keychains -d user -s "$keychain"
           security default-keychain -d user -s "$keychain"
+          # Updated fixture bundles have a different ad-hoc identity. Permit
+          # them to share this disposable test password without a GUI prompt.
+          fixture_password="$(openssl rand -base64 24)"
+          echo "::add-mask::$fixture_password"
+          security add-generic-password -a AgentSwitcher -s 'AgentSwitcher Safe Storage' -w "$fixture_password" -A "$keychain"
       - name: Test packaged application
         timeout-minutes: 5
         run: node .release-tools/scripts/smoke-electron.mjs

@@ -36,6 +36,9 @@ let application;
 let child;
 let server;
 let oldExited = false;
+let stage = 'prepare disposable bundles';
+let appOutput = '';
+function advance(value) { stage = value; console.log(`Update smoke: ${stage}`); }
 async function digest(file) {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(file)) hash.update(chunk);
@@ -109,8 +112,10 @@ try {
   const before = await digest(join(codexHome, 'config.toml'));
   const environment = { ...process.env, CODEX_HOME: codexHome };
   delete environment.ELECTRON_RUN_AS_NODE;
+  advance('launch isolated installed copy');
   application = await electron.launch({ executablePath: installedExecutable, args: [`--user-data-dir=${userData}`], env: environment, timeout: 45000 });
   child = application.process();
+  for (const stream of [child.stdout, child.stderr]) stream?.on('data', chunk => { appOutput = (appOutput + chunk.toString()).slice(-16000); });
   const page = await application.firstWindow({ timeout: 45000 });
   await expect(page.locator('.profile-card')).not.toHaveCount(0, { timeout: 45000 });
   expect(await application.evaluate(({ app }) => app.getPath('userData'))).toBe(userData);
@@ -126,8 +131,10 @@ try {
     };
     dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
   }, { base, asset, local });
+  advance('check and download verified update');
   expect((await page.evaluate(() => window.agentSwitcher.checkForUpdates())).status).toBe('available');
   expect((await page.evaluate(() => window.agentSwitcher.downloadUpdate())).status).toBe('downloaded');
+  advance('prepare installation and exit old process');
   try {
     const installing = await page.evaluate(() => window.agentSwitcher.installUpdate());
     expect(installing.status, `Install preparation returned ${installing.error ?? installing.status}`).toBe('installing');
@@ -136,6 +143,7 @@ try {
   await expect.poll(() => child.exitCode, { timeout: 10000 }).toBe(0);
   oldExited = true;
   const receipt = join(userData, 'updates/installer/pending-install.json');
+  advance('wait for replacement, relaunch and healthy startup cleanup');
   await expect.poll(async () => {
     try {
       const version = (await run('/usr/bin/plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', join(installedApp, 'Contents/Info.plist')])).stdout.trim();
@@ -148,6 +156,15 @@ try {
   expect(await digest(join(codexHome, 'config.toml'))).toBe(before);
   expect((await readdir(dirname(installedApp))).filter(name => name.startsWith('.AgentSwitcher-'))).toEqual([]);
   console.log(`macOS update smoke passed: verified ${sourceVersion} → fixture ${futureVersion}, streamed SHA-256 download, parent exit, app replacement, relaunch with the same isolated profile, healthy-start backup cleanup, unchanged settings/Codex config. Only temporary copies were updated.`);
+} catch (error) {
+  console.error(`Update smoke failed during: ${stage}`, error);
+  console.error('Original application output:', appOutput);
+  const installer = join(userData, 'updates/installer');
+  for (const name of await readdir(installer).catch(() => [])) {
+    if (name.endsWith('.result')) console.error('Installer helper result:', await readFile(join(installer, name), 'utf8'));
+  }
+  console.error('Remaining disposable process IDs:', await fixtureProcesses());
+  throw error;
 } finally {
   if (!oldExited && child?.exitCode === null) {
     const timeout = setTimeout(() => { if (child.exitCode === null) child.kill('SIGKILL'); }, 10000);
@@ -155,6 +172,10 @@ try {
   }
   // Stop only the newly relaunched disposable executable, verified by exact path.
   for (const pid of await fixtureProcesses()) { try { process.kill(pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
+  // A native system dialog can prevent graceful termination on CI. Force only
+  // this exact disposable executable so cleanup cannot hide the original error.
+  await new Promise(resolveWait => setTimeout(resolveWait, 1000));
+  for (const pid of await fixtureProcesses()) { try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
   await expect.poll(async () => (await fixtureProcesses()).length, { timeout: 10000 }).toBe(0);
   if (server) await new Promise(resolveClose => { server.close(resolveClose); server.closeAllConnections(); });
   if (process.env.AGENT_SWITCHER_KEEP_UPDATE_FIXTURE) console.log(`Retained disposable update fixture: ${directory}`);
