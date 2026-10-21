@@ -73,7 +73,12 @@ try {
   const integrity = createHash('sha256').update(asar.getRawHeader(futureArchive).headerString).digest('hex');
   await run('/usr/bin/plutil', ['-replace', 'ElectronAsarIntegrity.Resources/app\\.asar.hash', '-string', integrity, join(futureApp, 'Contents/Info.plist')]);
   await rm(unpacked, { recursive: true });
-  await run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', futureApp]);
+  const sourceEntitlements = (await run('/usr/bin/codesign', ['--display', '--entitlements', '-', sourceApp])).stdout;
+  await run('/usr/bin/codesign', ['--force', '--deep', '--preserve-metadata=entitlements,flags', '--sign', '-', futureApp]);
+  expect((await run('/usr/bin/codesign', ['--display', '--entitlements', '-', futureApp])).stdout).toBe(sourceEntitlements);
+  const rendererBundle = 'Contents/Frameworks/AgentSwitcher Helper (Renderer).app';
+  expect((await run('/usr/bin/codesign', ['--display', '--entitlements', '-', join(futureApp, rendererBundle)])).stdout)
+    .toBe((await run('/usr/bin/codesign', ['--display', '--entitlements', '-', join(sourceApp, rendererBundle)])).stdout);
   await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', futureApp]);
   const asset = `AgentSwitcher-${futureVersion}-mac-${process.arch}.zip`;
   const archive = join(directory, asset);
@@ -167,6 +172,11 @@ try {
   console.error('Installed bundle version:', (await run('/usr/bin/plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', join(installedApp, 'Contents/Info.plist')]).catch(() => ({ stdout: 'unavailable' }))).stdout.trim());
   const remaining = await fixtureProcesses();
   console.error('Remaining disposable process IDs:', remaining);
+  if (remaining.length) console.error('Disposable application arguments:', (await run('/bin/ps', ['-ww', '-p', remaining.join(','), '-o', 'pid=,ppid=,args='])).stdout);
+  try {
+    asar.uncacheAll();
+    console.error('Installed runtime package version:', JSON.parse(asar.extractFile(join(installedApp, 'Contents/Resources/app.asar'), 'package.json').toString()).version);
+  } catch { console.error('Installed runtime package version unavailable'); }
   if (process.env.CI) for (const pid of remaining) {
     // Only sample the exact disposable executable, never other desktop apps.
     const sample = join(directory, `process-${pid}.sample`);

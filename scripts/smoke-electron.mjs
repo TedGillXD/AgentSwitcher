@@ -46,7 +46,7 @@ async function clickToHide(page, button) {
   const window = await application.browserWindow(page);
   const hidden = () => window.evaluate(target => !target.isDestroyed() && !target.isVisible());
   try {
-    expect(await window.evaluate(target => !target.isDestroyed() && target.isVisible())).toBe(true);
+    await expect.poll(() => window.evaluate(target => !target.isDestroyed() && target.isVisible()), { timeout: 10000 }).toBe(true);
     try { await button.click({ timeout: 5000 }); }
     catch (error) {
       // Windows can hide the native window before the input acknowledgement
