@@ -98,7 +98,13 @@ try {
     try {
       await run('/usr/bin/security', ['set-generic-password-partition-list', '-a', 'AgentSwitcher', '-s', 'AgentSwitcher Safe Storage',
         '-S', ['apple-tool:', 'apple:', ...hashes].join(','), '-k', process.env.AGENT_SWITCHER_TEST_KEYCHAIN_PASSWORD, testKeychain]);
-    } catch { throw new Error('Could not authorize the disposable update test keychain'); }
+    } catch (error) {
+      // The GUI-session unlock may already permit access. Keep running the real
+      // upgrade assertions; a blocked keychain still fails healthy startup.
+      // Never print execFile's message/arguments, which contain the password.
+      const detail = String(error.stderr ?? '').replaceAll(process.env.AGENT_SWITCHER_TEST_KEYCHAIN_PASSWORD, '[redacted]').slice(0, 2000);
+      console.warn(`Disposable keychain partition setup exited ${error.code ?? 'unknown'}:`, detail);
+    }
   }
   const asset = `AgentSwitcher-${futureVersion}-mac-${process.arch}.zip`;
   const archive = join(directory, asset);
