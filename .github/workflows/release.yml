@@ -1,0 +1,172 @@
+name: Desktop release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and release, for example v0.2.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }} ${{ matrix.arch }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            platform: win
+            arch: x64
+            executable: release/win-unpacked/AgentSwitcher.exe
+          - os: windows-11-arm
+            platform: win
+            arch: arm64
+            executable: release/win-arm64-unpacked/AgentSwitcher.exe
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
+            executable: release/mac/AgentSwitcher.app/Contents/MacOS/AgentSwitcher
+          - os: macos-15
+            platform: mac
+            arch: arm64
+            executable: release/mac-arm64/AgentSwitcher.app/Contents/MacOS/AgentSwitcher
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET_PLATFORM: ${{ matrix.platform }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Verify tag and native architecture
+        run: >-
+          node -e "const p=require('./package.json');
+          if(!/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(process.env.RELEASE_TAG)||process.env.RELEASE_TAG!=='v'+p.version)throw new Error('Tag must match package.json version');
+          if(process.arch!==process.env.TARGET_ARCH)throw new Error('Native runner architecture mismatch');"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - if: runner.os == 'Windows'
+        run: pnpm test:force-stop
+      - run: pnpm build
+      - name: Test native Electron
+        if: runner.os == 'Windows'
+        # macOS runs the packaged binary below so a second app identity cannot
+        # prompt for access to the same Safe Storage Keychain item.
+        run: pnpm test:electron
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        run: pnpm exec electron-builder --win --${{ matrix.arch }} --publish never
+      - name: Package macOS disk image and archive
+        if: runner.os == 'macOS'
+        # Ad-hoc signing allows Apple Silicon to run the build without a Developer ID.
+        # These community builds are not notarized; signing secrets are not required.
+        run: pnpm exec electron-builder --mac --${{ matrix.arch }} --publish never --config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.notarize=false
+      - name: Test packaged application
+        run: pnpm test:electron
+        env:
+          AGENT_SWITCHER_EXECUTABLE: ${{ matrix.executable }}
+      - name: Collect validated installers
+        run: >-
+          node -e "const fs=require('node:fs');const v=require('./package.json').version;
+          const prefix='AgentSwitcher-'+v+'-'+process.env.TARGET_PLATFORM+'-'+process.env.TARGET_ARCH;
+          fs.mkdirSync('release-assets',{recursive:true});
+          for(const ext of process.env.TARGET_PLATFORM==='win'?['.exe']:['.dmg','.zip']){
+          const name=prefix+ext;const src='release/'+name;
+          if(!fs.statSync(src).isFile()||fs.statSync(src).size<1024)throw new Error('Missing or empty installer: '+name);
+          fs.copyFileSync(src,'release-assets/'+name);}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    name: Publish complete release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installers-*
+          merge-multiple: true
+          path: release-assets
+      - name: Validate complete release and calculate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${RELEASE_TAG#v}"
+          cd release-assets
+          expected=(
+            "AgentSwitcher-${version}-win-x64.exe"
+            "AgentSwitcher-${version}-win-arm64.exe"
+            "AgentSwitcher-${version}-mac-x64.dmg"
+            "AgentSwitcher-${version}-mac-x64.zip"
+            "AgentSwitcher-${version}-mac-arm64.dmg"
+            "AgentSwitcher-${version}-mac-arm64.zip"
+          )
+          for file in "${expected[@]}"; do test -s "$file"; done
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq "${#expected[@]}"
+          sha256sum "${expected[@]}" > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+      - name: Create draft, upload all assets, and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          Windows 和 macOS 安装包 / Windows and macOS installers.
+
+          - Windows x64: Intel / AMD PC；Windows arm64: ARM PC。
+          - macOS x64: Intel Mac；macOS arm64: Apple Silicon (M1 及更新)。
+          - macOS 使用 DMG 安装，也提供 ZIP；SHA256SUMS.txt 可校验下载文件。
+
+          包含多配置管理、中英双语、独立加密密钥，以及托盘面板定位和保持打开修复。
+
+          当前社区构建没有 Windows 代码签名或 Apple Developer ID / 公证。macOS 包采用 ad-hoc 签名。系统可能要求通过“系统设置 → 隐私与安全性 → 仍要打开”确认后运行。
+
+          These community builds do not have Windows code signing or Apple Developer ID notarization. macOS builds use ad-hoc signatures. Approve the app in System Settings → Privacy & Security if required.
+          NOTES
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > release-draft.txt 2>/dev/null; then
+            if [[ "$(cat release-draft.txt)" != true ]]; then
+              echo 'This tag already has a published release; refusing to overwrite it.' >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "AgentSwitcher $RELEASE_TAG" --notes-file release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          count="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')"
+          test "$count" -eq 7
+          gh release edit "$RELEASE_TAG" --draft=false --latest --notes-file release-notes.md
+          gh release view "$RELEASE_TAG" --json url --jq .url

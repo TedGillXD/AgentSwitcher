@@ -4,6 +4,10 @@
   "description": "A local-first Codex profile switcher for Windows and macOS",
   "author": "AgentSwitcher contributors",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TedGillXD/AgentSwitcher.git"
+  },
   "private": true,
   "type": "module",
   "main": "out/main/index.js",

@@ -2,6 +2,19 @@
 
 一个类似 JetBrains Toolbox 的纯客户端 Codex 配置切换器。基于 Electron、React 和 TypeScript，支持 Windows 托盘和 macOS 菜单栏；点击图标时，在点击所在屏幕的图标附近打开面板，并限制在该屏幕的可用区域内。点击其他位置会保持面板打开，点击关闭按钮或再次点击同屏托盘图标才收起；收起后继续驻留。
 
+## 下载安装
+
+从 [GitHub Releases](https://github.com/TedGillXD/AgentSwitcher/releases/latest) 下载对应平台的安装包：
+
+| 设备 | 安装包 |
+| --- | --- |
+| Windows Intel / AMD | `AgentSwitcher-版本-win-x64.exe` |
+| Windows ARM64 | `AgentSwitcher-版本-win-arm64.exe` |
+| macOS Intel | `AgentSwitcher-版本-mac-x64.dmg` |
+| macOS Apple Silicon（M 系列） | `AgentSwitcher-版本-mac-arm64.dmg` |
+
+macOS 安装包要求 macOS 13 或更新版本，同时提供 ZIP 包。安装前请退出旧版 AgentSwitcher。当前版本未配置 Windows 代码签名和 Apple Developer 签名/公证；macOS 的系统检查可能需要在“系统设置 → 隐私与安全性”中确认打开此应用。每个 Release 提供 `SHA256SUMS.txt` 校验文件。
+
 ## 功能
 
 - 主面板快速切换 ChatGPT 登录和多套 API 配置，并重新启动 Codex；正常退出超时后可强制终止。
@@ -37,6 +50,8 @@ pnpm dist:mac             # macOS Intel + Apple Silicon DMG / ZIP
 ```
 
 产物位于 `release/`。Windows 包在 Windows 构建，macOS 包在 macOS 构建。仓库提供 GitHub Actions 双平台构建流程；正式分发可通过 electron-builder 的 `CSC_LINK` / `CSC_KEY_PASSWORD` 配置签名，macOS 公证另需 Apple 凭证。当前源码不包含签名证书或公证配置。
+
+版本发布由 `.github/workflows/release.yml` 管理：先更新 `package.json` 的版本，再创建并推送同名的 `v版本` 标签，例如 `v0.2.1`。Windows、Intel Mac 和 Apple Silicon Mac 的构建与检查全部成功后，发布流程才会上传安装包并公开 Release；日常构建不发布版本。发布使用仓库内置的 `GITHUB_TOKEN`，无需另存个人访问令牌。
 
 ## 使用
 
