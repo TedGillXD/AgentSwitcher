@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowRight, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, CircleCheck,
-  CircleDot, Ellipsis, Eye, EyeOff, FolderOpen, Globe2, KeyRound, Layers3, LoaderCircle,
+  CircleDot, Download, Ellipsis, ExternalLink, Eye, EyeOff, FolderOpen, Globe2, KeyRound, Layers3, LoaderCircle,
   LockKeyhole, Pencil, Plus, Power, RefreshCw, Settings2, ShieldCheck, Sparkles,
   Terminal, Trash2, X, Zap,
 } from 'lucide-react';
-import type { ApiProfile, ApiProtocol, AppState, ConnectionResult, Language, ProviderPreset, SaveProfileInput, Settings } from '../../shared/types';
+import type { ApiProfile, ApiProtocol, AppState, ConnectionResult, Language, ProviderPreset, SaveProfileInput, Settings, UpdateState } from '../../shared/types';
 import { PROVIDER_PRESETS } from '../../shared/provider-presets';
 import { translator, type Translate } from './i18n';
 import { friendlyError } from './errors';
@@ -20,7 +20,7 @@ const previewSettings: Settings = {
   deepseekModel: 'deepseek-flash', launchAtLogin: false, hideOnBlur: false,
 };
 const previewState: AppState = {
-  version: '0.2.3', platform: 'preview', settings: previewSettings,
+  version: '0.2.4', platform: 'preview', settings: previewSettings,
   profiles: [{ id: 'deepseek', name: 'DeepSeek', preset: 'deepseek', baseUrl: 'https://api.deepseek.com', protocol: 'auto', modelIds: ['deepseek-flash', 'deepseek-v4-pro'], defaultModel: 'deepseek-flash', hasApiKey: false }],
   activeProfile: 'chatgpt', hasApiKey: false, encryptionAvailable: true, codexInstalled: true,
   codexRunning: true, detectedAppPath: null, bridgeRunning: false, lastSwitchedAt: null, lastError: null,
@@ -311,8 +311,85 @@ function GeneralSettings({ controller: c, onDirty }: { controller: Controller; o
     <section className="settings-section general-section"><div className="settings-section-heading"><Settings2 size={15} /><h2>{t('behavior')}</h2></div>
       <div className="preference-row"><div><label id="launch-label">{t('launchAtLogin')}</label><p>{t('launchAtLoginHint')}</p></div><Toggle label={t('launchAtLogin')} checked={draft.launchAtLogin} disabled={c.disabled} onChange={(value) => setDraft((old) => ({ ...old, launchAtLogin: value }))} /></div>
       <div className="preference-row language-row"><label htmlFor="display-language">{t('displayLanguage')}</label><select id="display-language" value={state.settings.language} disabled={!!c.busy} onChange={(event) => void c.changeLanguage(event.target.value as Language)}><option value="zh-CN">简体中文</option><option value="en">English</option></select></div>
-    </section><p className="security-note"><LockKeyhole size={13} />{t('securityNote')}</p>
+    </section><UpdateSettings controller={c} dirty={dirty} /><p className="security-note"><LockKeyhole size={13} />{t('securityNote')}</p>
   </div><div className="editor-save-bar"><span className={`save-status ${dirty ? 'dirty' : ''}`}><span className="tiny-dot" />{t(dirty ? 'unsaved' : 'savedState')}</span><button className="button primary" disabled={c.disabled || !dirty} onClick={() => void save()}>{c.busy === 'settings' ? <LoaderCircle size={14} className="spin" /> : <Check size={14} />}{t(c.busy === 'settings' ? 'saving' : 'saveSettings')}</button></div></section>;
+}
+
+function UpdateSettings({ controller: c, dirty }: { controller: Controller; dirty: boolean }) {
+  const { t } = c;
+  const [update, setUpdate] = useState<UpdateState | null>(null);
+  const [pending, setPending] = useState<'check' | 'download' | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const mounted = useRef(true);
+  const pendingAction = useRef(false);
+  const lastOperation = useRef<'check' | 'download' | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    if (!api) return () => { mounted.current = false; };
+    let receivedPush = false;
+    const unsubscribe = api.onUpdateStateChanged((next) => {
+      receivedPush = true;
+      setUpdate(next); setLocalError(null);
+    });
+    void api.getUpdateState().then((next) => {
+      if (mounted.current && !receivedPush) setUpdate(next);
+    }).catch((error) => { if (mounted.current) setLocalError(error instanceof Error ? error.message : 'UPDATE_CHECK_FAILED'); });
+    return () => { mounted.current = false; unsubscribe(); };
+  }, []);
+  const run = async (action: 'check' | 'download') => {
+    if (!api || pendingAction.current) return;
+    lastOperation.current = action;
+    pendingAction.current = true; setPending(action); setLocalError(null);
+    try {
+      const next = await (action === 'check' ? api.checkForUpdates() : api.downloadUpdate());
+      if (mounted.current) setUpdate(next);
+    } catch (error) {
+      if (mounted.current) setLocalError(error instanceof Error ? error.message : action === 'check' ? 'UPDATE_CHECK_FAILED' : 'UPDATE_DOWNLOAD_FAILED');
+    } finally {
+      pendingAction.current = false;
+      if (mounted.current) setPending(null);
+    }
+  };
+  const install = () => c.run('install-update', async () => {
+    setLocalError(null);
+    try {
+      const next = await api!.installUpdate();
+      if (mounted.current) setUpdate(next);
+    } catch (error) {
+      if (mounted.current) setLocalError(error instanceof Error ? error.message : 'UPDATE_INSTALL_FAILED');
+    }
+  });
+  const openRelease = async () => {
+    try { await api!.openUpdateRelease(); }
+    catch (error) { if (mounted.current) setLocalError(error instanceof Error ? error.message : 'UPDATE_CHECK_FAILED'); }
+  };
+  const status = update?.status ?? 'idle';
+  const busy = !!pending || ['checking', 'downloading', 'installing'].includes(status);
+  const error = localError || update?.error;
+  const retryDownload = !!error && (/UPDATE_(DOWNLOAD|CHECKSUM|INVALID_CHECKSUM|SIZE|CANCELLED)/.test(error) || error === 'UPDATE_TIMEOUT' && lastOperation.current === 'download');
+  const canDownload = status === 'available' || status === 'error' && retryDownload;
+  const canInstall = status === 'downloaded' || status === 'installing';
+  const progress = update && update.totalBytes > 0 ? Math.min(100, Math.max(0, Math.round(update.downloadedBytes / update.totalBytes * 100))) : null;
+  const transfer = (bytes: number) => new Intl.NumberFormat(c.state.settings.language, { maximumFractionDigits: 1 }).format(bytes / 1024 / 1024);
+  return <section className="settings-section update-section" aria-labelledby="app-update-title">
+    <div className="settings-section-heading"><Download size={15} /><h2 id="app-update-title">{t('appUpdates')}</h2>{status === 'up-to-date' && <span className="update-current"><CircleCheck size={12} />{t('updateLatest')}</span>}</div>
+    <p className="update-source">{t('updateSource')}</p>
+    <dl className="update-versions"><div><dt>{t('currentVersion')}</dt><dd>v{update?.currentVersion ?? c.state.version}</dd></div>{update?.latestVersion && <div><dt>{t('latestVersion')}</dt><dd>v{update.latestVersion}</dd></div>}</dl>
+    <p className="update-status" role="status">{t(status === 'checking' ? 'checkingUpdates' : status === 'available' ? 'updateAvailable' : status === 'downloading' ? 'downloadingUpdate' : status === 'downloaded' ? 'updateReady' : status === 'installing' ? 'installingUpdate' : status === 'up-to-date' ? 'updateLatestHint' : 'updateCheckHint', { version: update?.latestVersion ?? '' })}</p>
+    {status === 'downloading' && <div className="update-progress"><progress max="100" value={progress ?? undefined} aria-label={t('updateProgress')} /><span>{progress === null ? `${transfer(update?.downloadedBytes ?? 0)} MB` : `${progress}% · ${transfer(update?.downloadedBytes ?? 0)} / ${transfer(update?.totalBytes ?? 0)} MB`}</span></div>}
+    {error && <div className="update-error" role="alert"><CircleAlert size={14} /><span>{friendlyError(error, c.state.settings.language)}</span></div>}
+    {update?.releaseNotes && <details className="update-notes"><summary>{t('updateNotes')}</summary><p>{update.releaseNotes}</p></details>}
+    {api && update && !update.canInstall && <p className="update-hint">{t('updateInstallUnavailable')}</p>}
+    {!api && <p className="update-hint">{t('updateDesktopOnly')}</p>}
+    {canInstall && dirty && <p className="update-hint update-unsaved">{t('updateSaveFirst')}</p>}
+    {(canDownload || canInstall) && update?.canInstall && <p className="update-hint">{t('updateRestartHint')}</p>}
+    <div className="update-actions">
+      <button className="button secondary" disabled={!api || busy} onClick={() => void run('check')}>{status === 'checking' || pending === 'check' ? <LoaderCircle size={13} className="spin" /> : <RefreshCw size={13} />}{t(status === 'checking' || pending === 'check' ? 'checkingUpdates' : error && !retryDownload && !canInstall ? 'retry' : 'checkUpdates')}</button>
+      {canDownload && <button className="button primary" disabled={!api || busy || !update?.canInstall} onClick={() => void run('download')}><Download size={13} />{t(retryDownload ? 'retryDownloadUpdate' : 'downloadUpdate')}</button>}
+      {canInstall && <button className="button primary" disabled={c.disabled || busy || dirty || !update?.canInstall} onClick={() => void install()}>{status === 'installing' ? <LoaderCircle size={13} className="spin" /> : <RefreshCw size={13} />}{t(status === 'installing' ? 'installingUpdate' : 'installUpdate')}</button>}
+      {api && <button className="text-button" onClick={() => void openRelease()}>{t('viewRelease')}<ExternalLink size={12} /></button>}
+    </div>
+  </section>;
 }
 
 function Toggle({ checked, onChange, label, disabled }: { checked: boolean; onChange: (value: boolean) => void; label: string; disabled?: boolean }) {

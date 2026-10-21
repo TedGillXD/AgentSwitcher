@@ -345,6 +345,30 @@ h1, h2, h3, p { margin: 0; }
 .manager-shell .general-section .settings-section-heading { margin-bottom: 3px; }
 .manager-shell .toggle { width: 32px; height: 19px; }
 .manager-shell .toggle span { width: 11px; height: 11px; }
+.update-section .settings-section-heading { flex-wrap: wrap; }
+.update-current { display: inline-flex; align-items: center; gap: 4px; font-size: 9px; color: #9acdb1; }
+.update-source, .update-status, .update-hint { font-size: 10px; color: #8b7d98; line-height: 1.8; }
+.update-source { margin-top: -5px; }
+.update-versions { display: flex; flex-wrap: wrap; gap: 14px 31px; margin: 17px 0 12px; }
+.update-versions > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 9px; }
+.update-versions dt { color: #8d7f9b; font-size: 10px; }
+.update-versions dd { margin: 0; font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace; color: #d1c1e0; font-size: 11px; overflow-wrap: anywhere; }
+.update-status { color: #b4a4c3; }
+.update-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
+.update-progress progress { flex: 1; min-width: 100px; height: 5px; border: 0; border-radius: 4px; overflow: hidden; appearance: none; accent-color: #b49bd8; background: #332b3e; }
+.update-progress progress::-webkit-progress-bar { background: #332b3e; border-radius: 4px; }
+.update-progress progress::-webkit-progress-value { background: #b49bd8; border-radius: 4px; transition: width .15s; }
+.update-progress > span { font-size: 9px; color: #ac99bd; }
+.update-error { display: flex; align-items: flex-start; gap: 7px; margin-top: 12px; padding: 9px 10px; border: 1px solid #5c3d4a; border-radius: 6px; color: #d7a7b9; background: #32212c; font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
+.update-error > svg { margin-top: 2px; }
+.update-notes { margin-top: 14px; font-size: 10px; color: #9f8daf; }
+.update-notes summary { cursor: pointer; width: fit-content; }
+.update-notes > p { max-height: 170px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; margin-top: 8px; color: #8c7d99; scrollbar-width: thin; }
+.update-hint { margin-top: 12px; font-size: 9px; }
+.update-unsaved { color: #d0b687; }
+.update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 15px; }
+.update-actions .button { font-size: 10px; }
+.update-actions .text-button { font-size: 9px; }
 @media (max-width: 900px) {
   .manager-sidebar { width: 205px; padding-left: 12px; padding-right: 12px; }
   .editor-scroll { padding-left: 26px; padding-right: 26px; }

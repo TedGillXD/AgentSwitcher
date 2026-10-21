@@ -1,7 +1,7 @@
 // Real Electron + preload + OS encryption, with isolated user-data/Codex folders.
 // This test never switches profiles, stops Codex, or calls a paid provider API.
 import { _electron as electron, expect } from '@playwright/test';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -210,6 +210,68 @@ try {
   expect(deleted.profiles.some(profile => profile.id === reloadedProfile.id)).toBe(false);
   await reopened.evaluate((settings) => window.agentSwitcher.saveSettings({ ...settings, clearApiKey: true }), loaded.settings);
   expect((await reopened.evaluate(() => window.agentSwitcher.getState())).hasApiKey).toBe(false);
+
+  stage('verify update IPC, download verification and cancelled installation');
+  const updateInitial = await reopened.evaluate(() => window.agentSwitcher.getUpdateState());
+  expect(updateInitial.currentVersion).toBe(loaded.version);
+  const updateVersion = loaded.version.replace(/\d+$/, patch => String(Number(patch) + 1));
+  const updateTarget = await application.evaluate(({ app }) => ({
+    platform: process.platform === 'darwin' ? 'mac' : 'win',
+    arch: app.runningUnderARM64Translation ? 'arm64' : process.arch,
+  }));
+  const updateAsset = `AgentSwitcher-${updateVersion}-${updateTarget.platform}-${updateTarget.arch}.${process.platform === 'darwin' ? 'zip' : 'exe'}`;
+  const updateContents = 'Verified update smoke fixture; never executed or extracted.';
+  const updateHash = createHash('sha256').update(updateContents).digest('hex');
+  await application.evaluate((_electron, fixture) => {
+    globalThis.__smokeUpdateOriginalFetch = globalThis.fetch;
+    const base = `https://github.com/TedGillXD/AgentSwitcher/releases/download/v${fixture.version}/`;
+    globalThis.fetch = async input => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url === 'https://api.github.com/repos/TedGillXD/AgentSwitcher/releases/latest') return new Response(JSON.stringify({
+        tag_name: `v${fixture.version}`, draft: false, prerelease: false,
+        html_url: `https://github.com/TedGillXD/AgentSwitcher/releases/tag/v${fixture.version}`,
+        published_at: '2026-10-21T12:00:00Z', body: 'Update IPC smoke fixture',
+        assets: [
+          { name: fixture.asset, browser_download_url: base + fixture.asset, size: fixture.contents.length, digest: `sha256:${fixture.hash}` },
+          { name: 'SHA256SUMS.txt', browser_download_url: base + 'SHA256SUMS.txt', size: fixture.hash.length + fixture.asset.length + 3 },
+        ],
+      }), { headers: { 'content-type': 'application/json' } });
+      if (url === base + 'SHA256SUMS.txt') return new Response(`${fixture.hash}  ${fixture.asset}\n`);
+      if (url === base + fixture.asset) return new Response(fixture.contents, { headers: { 'content-length': String(fixture.contents.length) } });
+      throw new Error('Unexpected smoke update request');
+    };
+  }, { version: updateVersion, asset: updateAsset, hash: updateHash, contents: updateContents });
+  try {
+    const available = await reopened.evaluate(() => window.agentSwitcher.checkForUpdates());
+    expect(available.status).toBe('available');
+    expect(available.latestVersion).toBe(updateVersion);
+    const downloaded = await reopened.evaluate(() => window.agentSwitcher.downloadUpdate());
+    if (updateInitial.canInstall) {
+      expect(downloaded.status).toBe('downloaded');
+      expect(downloaded.downloadedBytes).toBe(Buffer.byteLength(updateContents));
+      await application.evaluate(({ BrowserWindow, dialog }) => {
+        globalThis.__smokeUpdateOriginalMessageBox = dialog.showMessageBox;
+        globalThis.__smokeUpdateConfirmationOwned = false;
+        dialog.showMessageBox = async (owner) => {
+          globalThis.__smokeUpdateConfirmationOwned = owner instanceof BrowserWindow && owner.isVisible();
+          return { response: 0, checkboxChecked: false };
+        };
+      });
+      try {
+        const cancelled = await reopened.evaluate(() => window.agentSwitcher.installUpdate());
+        expect(cancelled.status).toBe('downloaded');
+        expect(cancelled.error).toBeNull();
+        expect(await application.evaluate(() => globalThis.__smokeUpdateConfirmationOwned)).toBe(true);
+        expect(application.process().exitCode).toBeNull();
+      } finally {
+        await application.evaluate(({ dialog }) => { dialog.showMessageBox = globalThis.__smokeUpdateOriginalMessageBox; });
+      }
+    } else {
+      expect(downloaded.error).toBe('UPDATE_UNSUPPORTED');
+    }
+  } finally {
+    await application.evaluate(() => { globalThis.fetch = globalThis.__smokeUpdateOriginalFetch; });
+  }
 
   stage('verify busy quit requests receive feedback');
   // Keep a configuration save pending without sending a network request. Only

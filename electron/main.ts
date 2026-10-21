@@ -7,9 +7,11 @@ import { CodexProcess } from './platform/codex-process';
 import { ProfileService } from './service';
 import { defaultSettings, LocalStore } from './store';
 import { AppError, errorCode } from './errors';
-import type { AppState, Result, View } from '../shared/types';
+import type { AppState, Result, UpdateState, View } from '../shared/types';
 import { version as packageVersion } from '../package.json';
 import { getPanelBounds } from './panel-position';
+import { AppUpdater, type VerifiedUpdate } from './updater';
+import { completePendingUpdate, prepareUpdateInstall } from './update-installer';
 
 const mainDirectory = dirname(fileURLToPath(import.meta.url));
 app.setName('AgentSwitcher');
@@ -26,6 +28,7 @@ const trustedWindows = new Map<number, string>();
 let tray: Tray | null = null;
 let service: ProfileService | null = null;
 let store: LocalStore | null = null;
+let updater: AppUpdater | null = null;
 let exiting = false;
 let quitRequest: Promise<void> | null = null;
 let nativeDialog = false;
@@ -138,9 +141,10 @@ async function showMessage(options: Electron.MessageBoxOptions): Promise<Electro
   } finally { nativeDialog = false; dialogOwner = null; }
 }
 
-function checkQuit(): void {
+function checkQuit(forUpdate = false): void {
   if (nativeDialog) throw new AppError('DIALOG_IN_PROGRESS');
   if (service?.isBusy) throw new AppError('SWITCH_IN_PROGRESS');
+  if (!forUpdate && updater?.isInstalling) throw new AppError('APP_UPDATING');
 }
 
 async function quitFromMenu(): Promise<void> {
@@ -155,6 +159,8 @@ async function quitFromMenu(): Promise<void> {
     await showMessage({ type: 'info', title: 'AgentSwitcher',
       message: error instanceof AppError && error.code === 'SWITCH_IN_PROGRESS'
         ? (zh() ? '当前操作尚未完成，请稍后退出' : 'Wait for the current operation to finish before quitting')
+        : error instanceof AppError && error.code === 'APP_UPDATING'
+        ? (zh() ? '正在安装更新，请稍候' : 'Installing an update. Please wait.')
         : (zh() ? '退出未完成，请重试' : 'Could not quit. Please try again.'),
       detail: errorCode(error), buttons: [zh() ? '好' : 'OK'],
     });
@@ -180,8 +186,13 @@ async function prepareQuit(confirm: boolean): Promise<void> {
     if (result.response !== 1) return;
   }
   checkQuit();
+  beginExit();
+}
+
+function beginExit(): void {
   exiting = true;
   if (refreshTimer) clearInterval(refreshTimer);
+  updater?.cancelDownload();
   // Return the IPC response before destroying its sender.
   setImmediate(() => {
     // Once all transactions are idle, an unresponsive listener must not trap the app.
@@ -192,6 +203,36 @@ async function prepareQuit(confirm: boolean): Promise<void> {
       console.error(`AgentSwitcher shutdown: ${errorCode(error)}`);
     }).finally(() => app.quit());
   });
+}
+
+async function installApplicationUpdate(update: VerifiedUpdate): Promise<boolean> {
+  if (exiting || quitRequest) throw new AppError('APP_QUITTING');
+  checkQuit(true);
+  const result = await showMessage({
+    type: 'question', title: 'AgentSwitcher',
+    message: zh() ? `安装 v${update.version} 并重启 AgentSwitcher？` : `Install v${update.version} and restart AgentSwitcher?`,
+    detail: zh()
+      ? '请先保存未保存的设置。更新会短暂断开 API 连接，完成后自动重新打开。已保存的配置和密钥会保留。'
+      : 'Save any unsaved settings first. The API connection will pause while the app restarts. Saved configurations and keys will be kept.',
+    buttons: zh() ? ['取消', '安装并重启'] : ['Cancel', 'Install & restart'], defaultId: 0, cancelId: 0,
+  });
+  if (result.response !== 1) return false;
+  checkQuit(true);
+  const plan = await prepareUpdateInstall({
+    update, platform: process.platform, executablePath: process.execPath,
+    userDataDirectory: app.getPath('userData'), currentVersion: app.getVersion(), parentPid: process.pid,
+  });
+  checkQuit(true);
+  await plan.launch();
+  beginExit();
+  return true;
+}
+
+function broadcastUpdate(state: UpdateState): void {
+  if (exiting) return;
+  for (const target of [window, settingsWindow]) {
+    if (target && !target.isDestroyed()) target.webContents.send('switcher:update-changed', state);
+  }
 }
 
 function updateTray(state: AppState): void {
@@ -215,6 +256,7 @@ function updateTray(state: AppState): void {
 
 async function traySwitch(profile: string): Promise<void> {
   if (!service || exiting || quitRequest) return;
+  if (updater?.isInstalling) throw new AppError('APP_UPDATING');
   try {
     const result = await showMessage({
       type: 'question', title: 'AgentSwitcher',
@@ -258,6 +300,7 @@ function registerIpc(): void {
   };
   const ready = (): ProfileService => {
     if (exiting || quitRequest) throw new AppError('APP_QUITTING');
+    if (updater?.isInstalling) throw new AppError('APP_UPDATING');
     if (initialError || !service) throw new AppError(initialError ?? 'OPERATION_FAILED');
     return service;
   };
@@ -275,6 +318,7 @@ function registerIpc(): void {
   handle('switcher:restart', () => ready().restartCodex());
   handle('switcher:test', (input) => ready().testConnection(input));
   handle('switcher:choose-app', async () => {
+    if (updater?.isInstalling) throw new AppError('APP_UPDATING');
     if (nativeDialog) throw new AppError('DIALOG_IN_PROGRESS');
     nativeDialog = true;
     dialogOwner = BrowserWindow.getFocusedWindow() ?? settingsWindow ?? window;
@@ -288,6 +332,7 @@ function registerIpc(): void {
     } finally { nativeDialog = false; dialogOwner = null; }
   });
   handle('switcher:choose-home', async () => {
+    if (updater?.isInstalling) throw new AppError('APP_UPDATING');
     if (nativeDialog) throw new AppError('DIALOG_IN_PROGRESS');
     nativeDialog = true;
     dialogOwner = BrowserWindow.getFocusedWindow() ?? settingsWindow ?? window;
@@ -309,9 +354,26 @@ function registerIpc(): void {
     if (typeof confirmed !== 'boolean') throw new AppError('INVALID_SETTINGS');
     return requestQuit(!confirmed);
   });
+  const updateReady = (): AppUpdater => {
+    if (exiting || quitRequest) throw new AppError('APP_QUITTING');
+    if (!updater) throw new AppError('UPDATE_UNSUPPORTED');
+    return updater;
+  };
+  handle('switcher:update-state', () => updateReady().getState());
+  handle('switcher:check-updates', () => updateReady().check());
+  handle('switcher:download-update', () => updateReady().download());
+  handle('switcher:install-update', () => updateReady().install());
+  handle('switcher:open-update-release', () => shell.openExternal('https://github.com/TedGillXD/AgentSwitcher/releases/latest'));
 }
 
 if (hasLock) app.whenReady().then(async () => {
+  updater = new AppUpdater({
+    currentVersion: app.isPackaged ? app.getVersion() : packageVersion,
+    platform: process.platform, arch: app.runningUnderARM64Translation ? 'arm64' : process.arch,
+    packaged: app.isPackaged, cacheDirectory: join(app.getPath('userData'), 'updates'),
+    fetch: (input, init) => fetch(input, init),
+    onChange: broadcastUpdate, install: installApplicationUpdate,
+  });
   const codec = {
     isEncryptionAvailable: () => ['win32', 'darwin'].includes(process.platform) && safeStorage.isEncryptionAvailable(),
     encryptString: (value: string) => safeStorage.encryptString(value),
@@ -369,6 +431,15 @@ if (hasLock) app.whenReady().then(async () => {
   });
   await window.loadURL(rendererUrl);
   await publishState();
+  await completePendingUpdate({
+    platform: process.platform, executablePath: process.execPath,
+    userDataDirectory: app.getPath('userData'), version: app.getVersion(),
+  }).then(async (error) => {
+    if (error) { updater?.recordInstallFailure(); await publishState(error); }
+  }).catch((error) => {
+    updater?.recordInstallFailure();
+    console.error(`AgentSwitcher update cleanup: ${errorCode(error)}`);
+  });
   refreshTimer = setInterval(() => { if ((window?.isVisible() || settingsWindow?.isVisible()) && !service?.isBusy) runBackground(publishState); }, 15000);
 }).catch(() => {
   dialog.showErrorBox('AgentSwitcher', 'STARTUP_FAILED');

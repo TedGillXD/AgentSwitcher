@@ -26,13 +26,24 @@ const profiles = [
 ];
 const keys = new Map(profiles.map((profile) => [profile.id, 'existing-mock-key']));
 let state = {
-  version: '0.2.3', platform: 'win32',
+  version: '0.2.4', platform: 'win32',
   settings: { language: 'zh-CN', codexHome: '', codexAppPath: '', deepseekBaseUrl: 'https://api.deepseek.com', deepseekModel: 'deepseek-flash', launchAtLogin: false, hideOnBlur: false },
   profiles, activeProfile: 'chatgpt', hasApiKey: true, encryptionAvailable: true,
   codexInstalled: true, codexRunning: true, detectedAppPath: 'C:\\Apps\\Codex.exe',
   bridgeRunning: false, lastSwitchedAt: null, lastError: null,
 };
 const snapshot = () => structuredClone(state);
+let updateState = {
+  status: 'idle', currentVersion: state.version, latestVersion: null, releaseUrl: null, releaseNotes: null, publishedAt: null,
+  downloadedBytes: 0, totalBytes: 0, error: null, canInstall: true,
+};
+const updateSnapshot = () => structuredClone(updateState);
+const broadcastUpdate = async (patch) => {
+  updateState = { ...updateState, ...patch };
+  const next = updateSnapshot();
+  await Promise.all(context.pages().map((page) => page.evaluate((value) => window.__updateListeners?.forEach((listener) => listener(value)), next)));
+  return next;
+};
 const broadcast = async () => {
   const value = snapshot();
   await Promise.all(context.pages().map((page) => page.evaluate((next) => window.__stateListeners?.forEach((listener) => listener(next)), value)));
@@ -68,6 +79,9 @@ try {
   await preview.getByLabel('API Key', { exact: true }).fill('preview-never-saved');
   await expect(preview.getByRole('button', { name: '保存配置', exact: true })).toBeDisabled();
   await expect(preview.getByRole('button', { name: '测试并发现模型', exact: true })).toBeDisabled();
+  await preview.goto(`${url}/?window=settings&profile=general`);
+  await expect(preview.getByRole('button', { name: '检查更新', exact: true })).toBeDisabled();
+  await expect(preview.getByText('请在已安装的桌面应用中检查和安装更新。', { exact: true })).toBeVisible();
   await preview.getByRole('button', { name: '切换语言', exact: true }).click();
   await expect(preview.getByText('Browser preview', { exact: true })).toBeVisible();
   await noOverflow(preview); await emptyBrowserStorage(preview); await preview.close();
@@ -77,6 +91,10 @@ try {
     const override = requestOverrides.get(page)?.[method];
     if (override) return override(input);
     if (method === 'getState') return snapshot();
+    if (method === 'getUpdateState') return updateSnapshot();
+    if (method === 'checkForUpdates') return broadcastUpdate({ status: 'up-to-date', latestVersion: state.version, error: null });
+    if (method === 'downloadUpdate') return broadcastUpdate({ status: 'downloaded', error: null });
+    if (method === 'installUpdate') return broadcastUpdate({ status: 'downloaded', error: null });
     if (method === 'openSettings') {
       if (!manager || manager.isClosed()) {
         manager = await context.newPage();
@@ -115,15 +133,16 @@ try {
     if (method === 'restartCodex') return snapshot();
     if (method === 'chooseCodexApp') return 'C:\\Apps\\Codex.exe';
     if (method === 'chooseCodexHome') return 'C:\\Isolated\\.codex';
-    if (['closeSettings', 'hideWindow', 'quit', 'openConfigFolder'].includes(method)) return;
+    if (['closeSettings', 'hideWindow', 'quit', 'openConfigFolder', 'openUpdateRelease'].includes(method)) return;
     throw new Error(`Unexpected method: ${method} from ${page.url()}`);
   });
   await context.addInitScript(() => {
-    window.__stateListeners = []; window.__editListeners = [];
+    window.__stateListeners = []; window.__editListeners = []; window.__updateListeners = [];
     const invoke = (method) => (input) => window.__mockInvoke(method, input);
-    window.agentSwitcher = Object.fromEntries(['getState', 'saveSettings', 'saveProfile', 'deleteProfile', 'testConnection', 'switchProfile', 'restartCodex', 'chooseCodexApp', 'chooseCodexHome', 'openSettings', 'closeSettings', 'openConfigFolder', 'hideWindow', 'quit'].map((name) => [name, invoke(name)]));
+    window.agentSwitcher = Object.fromEntries(['getState', 'saveSettings', 'saveProfile', 'deleteProfile', 'testConnection', 'switchProfile', 'restartCodex', 'chooseCodexApp', 'chooseCodexHome', 'openSettings', 'closeSettings', 'openConfigFolder', 'hideWindow', 'quit', 'getUpdateState', 'checkForUpdates', 'downloadUpdate', 'installUpdate', 'openUpdateRelease'].map((name) => [name, invoke(name)]));
     window.agentSwitcher.onStateChanged = (callback) => { window.__stateListeners.push(callback); return () => { window.__stateListeners = window.__stateListeners.filter((listener) => listener !== callback); }; };
     window.agentSwitcher.onEditProfile = (callback) => { window.__editListeners.push(callback); return () => { window.__editListeners = window.__editListeners.filter((listener) => listener !== callback); }; };
+    window.agentSwitcher.onUpdateStateChanged = (callback) => { window.__updateListeners.push(callback); return () => { window.__updateListeners = window.__updateListeners.filter((listener) => listener !== callback); }; };
     window.agentSwitcher.onNavigate = () => () => {};
   });
   await panel.reload();
@@ -353,6 +372,108 @@ try {
     await pushState({ ...snapshot(), lastError: 'BRIDGE_START_FAILED' });
     await expect(stateEventsPanel.getByRole('alert')).toContainText('本地连接未能启动');
   } finally { requestOverrides.delete(stateEventsPanel); await stateEventsPanel.close(); }
+
+  // Updating is an explicit settings action. Downloading never locks window
+  // controls, and a saved update survives leaving and reopening General settings.
+  const updater = await context.newPage();
+  await updater.setViewportSize({ width: 960, height: 760 });
+  let checkAttempts = 0;
+  let downloadAttempts = 0;
+  let installAttempts = 0;
+  let releaseDownload;
+  const pendingDownload = new Promise((resolve) => { releaseDownload = resolve; });
+  const availableUpdate = { status: 'available', latestVersion: '0.3.0', releaseUrl: 'https://github.com/TedGillXD/AgentSwitcher/releases/tag/v0.3.0', releaseNotes: 'New settings and app update support.\n更新说明仅作为文本显示。', publishedAt: '2026-10-22T00:00:00Z', error: null };
+  requestOverrides.set(updater, {
+    checkForUpdates: async () => {
+      checkAttempts++;
+      await broadcastUpdate({ status: 'checking', error: null });
+      if (checkAttempts === 1) {
+        await broadcastUpdate({ status: 'error', error: 'UPDATE_CHECK_FAILED' });
+        throw new Error('UPDATE_CHECK_FAILED');
+      }
+      return broadcastUpdate(availableUpdate);
+    },
+    downloadUpdate: async () => {
+      downloadAttempts++;
+      if (downloadAttempts === 1) {
+        await broadcastUpdate({ status: 'error', error: 'UPDATE_CHECKSUM_MISMATCH' });
+        throw new Error('UPDATE_CHECKSUM_MISMATCH');
+      }
+      await broadcastUpdate({ status: 'downloading', error: null, downloadedBytes: 25 * 1024 * 1024, totalBytes: 100 * 1024 * 1024 });
+      await pendingDownload;
+      return broadcastUpdate({ status: 'downloaded', downloadedBytes: 100 * 1024 * 1024 });
+    },
+    installUpdate: async () => {
+      installAttempts++;
+      await broadcastUpdate({ status: 'installing', error: null });
+      if (installAttempts === 2) {
+        await broadcastUpdate({ status: 'downloaded', error: 'UPDATE_INSTALL_FAILED' });
+        throw new Error('UPDATE_INSTALL_FAILED');
+      }
+      // The first installation request is cancelled in the native confirmation.
+      return broadcastUpdate({ status: installAttempts === 1 ? 'downloaded' : 'installing', error: null });
+    },
+  });
+  try {
+    const checksBeforeMount = callCount('checkForUpdates');
+    await updater.goto(`${url}/?window=settings&profile=general`);
+    await expect(updater.getByRole('heading', { name: '应用更新', exact: true })).toBeVisible();
+    expect(callCount('checkForUpdates')).toBe(checksBeforeMount);
+    await updater.getByRole('button', { name: '检查更新', exact: true }).click();
+    await expect(updater.getByRole('alert')).toContainText('检查更新失败');
+    await updater.getByRole('button', { name: '重试', exact: true }).click();
+    await expect(updater.getByText('发现新版本 0.3.0。', { exact: true })).toBeVisible();
+    await clickWindowAction(updater, '查看发布页', 'openUpdateRelease');
+    await updater.getByRole('button', { name: '下载更新', exact: true }).click();
+    await expect(updater.getByRole('alert')).toContainText('更新文件校验失败');
+    await updater.getByRole('button', { name: '重新下载', exact: true }).click();
+    await expect(updater.getByRole('progressbar', { name: '更新下载进度', exact: true })).toHaveAttribute('value', '25');
+    await expect(updater.getByRole('button', { name: '保存设置', exact: true })).toBeDisabled();
+    await expect(updater.getByRole('button', { name: '浏览', exact: true }).first()).toBeEnabled();
+    await clickWindowAction(updater, '关闭设置', 'closeSettings');
+    await updater.locator('.profile-navigation').getByRole('button', { name: 'DeepSeek', exact: false }).click();
+    await updater.getByRole('button', { name: '通用设置', exact: true }).click();
+    await expect(updater.getByRole('progressbar', { name: '更新下载进度', exact: true })).toHaveAttribute('value', '25');
+    releaseDownload();
+    await expect(updater.getByText('更新已就绪，可以安装。', { exact: true })).toBeVisible();
+    const originalHome = await updater.locator('#codex-home').inputValue();
+    await updater.locator('#codex-home').fill(`${originalHome}-unsaved`);
+    await expect(updater.getByRole('button', { name: '安装并重启', exact: true })).toBeDisabled();
+    await expect(updater.getByText('安装更新前，请先保存设置。', { exact: true })).toBeVisible();
+    await updater.locator('#codex-home').fill(originalHome);
+    await updater.getByRole('button', { name: '安装并重启', exact: true }).click();
+    await expect.poll(() => installAttempts).toBe(1);
+    await expect(updater.getByRole('button', { name: '安装并重启', exact: true })).toBeEnabled();
+    await updater.getByRole('button', { name: '安装并重启', exact: true }).click();
+    await expect(updater.getByRole('alert')).toContainText('安装更新未完成');
+    await expect(updater.getByRole('button', { name: '安装并重启', exact: true })).toBeEnabled();
+    await updater.locator('.update-section').screenshot({ path: path.join(output, 'app-update-ready-zh.png') });
+    await updater.setViewportSize({ width: 800, height: 620 });
+    await noOverflow(updater);
+    await updater.getByRole('button', { name: '安装并重启', exact: true }).click();
+    await expect(updater.getByRole('button', { name: '正在准备重启…', exact: true })).toBeDisabled();
+    await expect(updater.getByRole('button', { name: '关闭设置', exact: true })).toBeEnabled();
+  } finally { releaseDownload(); requestOverrides.delete(updater); await updater.close(); }
+
+  // Already-current and development builds get clear outcomes. Development can
+  // check releases but cannot download or install over the running application.
+  const currentUpdater = await context.newPage();
+  await currentUpdater.setViewportSize({ width: 960, height: 760 });
+  await broadcastUpdate({ status: 'idle', latestVersion: null, error: null, canInstall: true });
+  try {
+    await currentUpdater.goto(`${url}/?window=settings&profile=general`);
+    await currentUpdater.getByRole('button', { name: '检查更新', exact: true }).click();
+    await expect(currentUpdater.getByText('你正在使用最新版本。', { exact: true })).toBeVisible();
+    await broadcastUpdate({ ...availableUpdate, canInstall: false });
+    await expect(currentUpdater.getByRole('button', { name: '下载更新', exact: true })).toBeDisabled();
+    await expect(currentUpdater.getByText('请使用已安装的桌面版本进行应用内更新，也可从发布页手动安装。', { exact: true })).toBeVisible();
+    await currentUpdater.getByRole('button', { name: '切换语言', exact: true }).click();
+    await expect(currentUpdater.getByRole('heading', { name: 'App updates', exact: true })).toBeVisible();
+    await expect(currentUpdater.getByRole('button', { name: 'Download update', exact: true })).toBeDisabled();
+    await noOverflow(currentUpdater);
+    await emptyBrowserStorage(currentUpdater);
+    await currentUpdater.locator('.update-section').screenshot({ path: path.join(output, 'app-update-available-en.png') });
+  } finally { await currentUpdater.close(); }
   expect(errors).toEqual([]);
   console.log(JSON.stringify({ ok: true, browserErrors: errors, exercised: [...new Set(calls.map((call) => call.method))], profiles: state.profiles.length, screenshots: output }));
 } finally { await browser.close(); }

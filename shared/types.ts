@@ -85,6 +85,21 @@ export interface ConnectionResult {
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
+export type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'error' | 'unsupported';
+
+export interface UpdateState {
+  status: UpdateStatus;
+  currentVersion: string;
+  latestVersion: string | null;
+  releaseUrl: string | null;
+  releaseNotes: string | null;
+  publishedAt: string | null;
+  downloadedBytes: number;
+  totalBytes: number;
+  error: string | null;
+  canInstall: boolean;
+}
+
 export interface AgentSwitcherApi {
   getState(): Promise<AppState>;
   saveSettings(input: SaveSettingsInput): Promise<AppState>;
@@ -100,6 +115,12 @@ export interface AgentSwitcherApi {
   openConfigFolder(): Promise<void>;
   hideWindow(): Promise<void>;
   quit(confirmed?: boolean): Promise<void>;
+  getUpdateState(): Promise<UpdateState>;
+  checkForUpdates(): Promise<UpdateState>;
+  downloadUpdate(): Promise<UpdateState>;
+  installUpdate(): Promise<UpdateState>;
+  openUpdateRelease(): Promise<void>;
+  onUpdateStateChanged(callback: (state: UpdateState) => void): () => void;
   onStateChanged(callback: (state: AppState) => void): () => void;
   onNavigate(callback: (view: View) => void): () => void;
   onEditProfile(callback: (id: string | null) => void): () => void;

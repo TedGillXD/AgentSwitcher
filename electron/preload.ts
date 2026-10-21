@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AgentSwitcherApi, AppState, Result, View } from '../shared/types';
+import type { AgentSwitcherApi, AppState, Result, UpdateState, View } from '../shared/types';
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   const result = await ipcRenderer.invoke(channel, ...args) as Result<T>;
@@ -30,6 +30,16 @@ const api: AgentSwitcherApi = {
   openConfigFolder: () => invoke('switcher:open-config'),
   hideWindow: () => invoke('switcher:hide'),
   quit: (confirmed) => invoke('switcher:quit', confirmed),
+  getUpdateState: () => invoke('switcher:update-state'),
+  checkForUpdates: () => invoke('switcher:check-updates'),
+  downloadUpdate: () => invoke('switcher:download-update'),
+  installUpdate: () => invoke('switcher:install-update'),
+  openUpdateRelease: () => invoke('switcher:open-update-release'),
+  onUpdateStateChanged: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: UpdateState) => callback(state);
+    ipcRenderer.on('switcher:update-changed', listener);
+    return () => ipcRenderer.removeListener('switcher:update-changed', listener);
+  },
   onStateChanged: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, state: AppState) => callback(state);
     ipcRenderer.on('switcher:changed', listener);
