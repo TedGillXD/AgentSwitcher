@@ -55,6 +55,16 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
           persist-credentials: false
+      - name: Check out release verification tools
+        uses: actions/checkout@v4
+        with:
+          # Keep the application pinned to its tag while allowing CI-only fixes
+          # to verify an existing release with the workflow's exact revision.
+          ref: ${{ github.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: scripts/smoke-electron.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
           version: 11.25.0
@@ -100,7 +110,7 @@ jobs:
           security default-keychain -d user -s "$keychain"
       - name: Test packaged application
         timeout-minutes: 5
-        run: pnpm test:electron
+        run: node .release-tools/scripts/smoke-electron.mjs
         env:
           AGENT_SWITCHER_EXECUTABLE: ${{ matrix.executable }}
       - name: Remove isolated macOS test keychain

@@ -1,7 +1,7 @@
 // Real Electron + preload + OS encryption, with isolated user-data/Codex folders.
 // This test never switches profiles, stops Codex, or calls a paid provider API.
 import { _electron as electron, expect } from '@playwright/test';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 
@@ -40,7 +40,9 @@ try {
   stage('launch isolated application');
   application = await electron.launch(launchOptions);
   stage('attached to main process');
-  expect(await application.evaluate(({ app }) => app.getPath('userData'))).toBe(dataDirectory);
+  // macOS canonicalizes /var to /private/var for packaged apps.
+  const actualDataDirectory = await application.evaluate(({ app }) => app.getPath('userData'));
+  expect(await realpath(actualDataDirectory)).toBe(await realpath(dataDirectory));
   const page = await application.firstWindow({ timeout: 45000 });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
