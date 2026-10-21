@@ -25,7 +25,7 @@ const profiles = [
 ];
 const keys = new Map(profiles.map((profile) => [profile.id, 'existing-mock-key']));
 let state = {
-  version: '0.2.1', platform: 'win32',
+  version: '0.2.2', platform: 'win32',
   settings: { language: 'zh-CN', codexHome: '', codexAppPath: '', deepseekBaseUrl: 'https://api.deepseek.com', deepseekModel: 'deepseek-flash', launchAtLogin: false, hideOnBlur: false },
   profiles, activeProfile: 'chatgpt', hasApiKey: true, encryptionAvailable: true,
   codexInstalled: true, codexRunning: true, detectedAppPath: 'C:\\Apps\\Codex.exe',

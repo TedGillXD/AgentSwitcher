@@ -20,7 +20,7 @@ const previewSettings: Settings = {
   deepseekModel: 'deepseek-flash', launchAtLogin: false, hideOnBlur: false,
 };
 const previewState: AppState = {
-  version: '0.2.1', platform: 'preview', settings: previewSettings,
+  version: '0.2.2', platform: 'preview', settings: previewSettings,
   profiles: [{ id: 'deepseek', name: 'DeepSeek', preset: 'deepseek', baseUrl: 'https://api.deepseek.com', protocol: 'auto', modelIds: ['deepseek-flash', 'deepseek-v4-pro'], defaultModel: 'deepseek-flash', hasApiKey: false }],
   activeProfile: 'chatgpt', hasApiKey: false, encryptionAvailable: true, codexInstalled: true,
   codexRunning: true, detectedAppPath: null, bridgeRunning: false, lastSwitchedAt: null, lastError: null,

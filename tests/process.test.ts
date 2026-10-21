@@ -118,7 +118,27 @@ describe('Codex desktop process adapter', () => {
     expect(await adapter.isRunning(desktop)).toBe(true)
     expect(run.mock.calls[0]![2]?.env?.AGENT_SWITCHER_DESKTOP_PATH).toBe(desktop.path)
     expect(run.mock.calls[0]![1].at(-1)).not.toContain(desktop.path)
+    expect(run.mock.calls[0]![1].at(-1)).toContain(`-Filter "Name = 'Codex.exe' OR Name = 'ChatGPT.exe'"`)
+    expect(run.mock.calls[0]![2]?.timeout).toBe(30_000)
   })
+
+  it('uses a separately configurable, bounded Windows query timeout for both discovery and process checks', async () => {
+    const run = vi.fn<CommandRunner>().mockResolvedValue(result('[]'))
+    const adapter = new CodexProcess({
+      platform: 'win32', run, exists: async () => false,
+      powershellTimeoutMs: 45_000, stopTimeoutMs: 5_000,
+    })
+    expect(await adapter.detect()).toBeNull()
+    expect(await adapter.isRunning(desktop)).toBe(false)
+    expect(run.mock.calls).toHaveLength(2)
+    expect(run.mock.calls.every(([, , options]) => options?.timeout === 45_000)).toBe(true)
+  })
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 120_001, 1000.5])(
+    'rejects an unbounded or invalid PowerShell timeout %s', (powershellTimeoutMs) => {
+      expect(() => new CodexProcess({ powershellTimeoutMs })).toThrow('PowerShell query timeout')
+    },
+  )
 
   it('gracefully closes only matched main PIDs and waits for exit', async () => {
     let checks = 0

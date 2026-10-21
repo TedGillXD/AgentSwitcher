@@ -47,6 +47,8 @@ export interface CodexProcessOptions {
   stopTimeoutMs?: number
   forceTimeoutMs?: number
   launchTimeoutMs?: number
+  /** Bounds each Windows system query, including a cold PowerShell/WMI startup. */
+  powershellTimeoutMs?: number
   pollMs?: number
 }
 
@@ -101,7 +103,9 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $target = $env:AGENT_SWITCHER_DESKTOP_PATH
 $targetName = [System.IO.Path]::GetFileName($target)
-$matches = @(Get-CimInstance Win32_Process | Where-Object {
+# Filter in CIM before materializing records; only these desktop image names
+# are supported, so no user-controlled text enters a WQL expression.
+$matches = @(Get-CimInstance Win32_Process -Filter "Name = 'Codex.exe' OR Name = 'ChatGPT.exe'" | Where-Object {
   $_.Name -ieq $targetName -and $_.ExecutablePath -ieq $target -and
   $_.CommandLine -notmatch '(?:^|[\\s\x22])--type(?:=|[\\s\x22])'
 } | ForEach-Object {
@@ -183,6 +187,7 @@ export class CodexProcess {
   private readonly stopTimeoutMs: number
   private readonly forceTimeoutMs: number
   private readonly launchTimeoutMs: number
+  private readonly powershellTimeoutMs: number
   private readonly pollMs: number
 
   constructor(options: CodexProcessOptions = {}) {
@@ -196,6 +201,12 @@ export class CodexProcess {
     this.stopTimeoutMs = options.stopTimeoutMs ?? 5_000
     this.forceTimeoutMs = options.forceTimeoutMs ?? 5_000
     this.launchTimeoutMs = options.launchTimeoutMs ?? 12_000
+    // First use of Windows PowerShell and CIM can exceed ten seconds on an
+    // ARM64 machine. This query budget is separate from the shutdown grace wait.
+    this.powershellTimeoutMs = options.powershellTimeoutMs ?? 30_000
+    if (!Number.isInteger(this.powershellTimeoutMs) || this.powershellTimeoutMs < 1 || this.powershellTimeoutMs > 120_000) {
+      throw new Error('PowerShell query timeout must be an integer between 1 and 120000 milliseconds')
+    }
     this.pollMs = options.pollMs ?? 300
   }
 
@@ -411,7 +422,7 @@ export class CodexProcess {
   private powershell(script: string, extraEnv: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string }> {
     return this.run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
       env: { ...this.env, ...extraEnv },
-      timeout: 10_000,
+      timeout: this.powershellTimeoutMs,
     })
   }
 

@@ -13,18 +13,39 @@ await mkdir('test-results', { recursive: true });
 const environment = { ...process.env, AGENT_SWITCHER_USER_DATA: dataDirectory, CODEX_HOME: codexHome };
 delete environment.ELECTRON_RUN_AS_NODE;
 let application;
+// A blocked native permission prompt must fail CI and leave useful logs.
+// Only the Electron child created by this test can be terminated here.
+const deadline = setTimeout(() => {
+  console.error('Electron smoke exceeded its 3 minute deadline.');
+  if (application?.process().exitCode === null) application.process().kill('SIGKILL');
+}, 180000);
+deadline.unref();
+async function closeApplication() {
+  if (!application) return;
+  const closing = application;
+  application = undefined;
+  const timeout = setTimeout(() => {
+    if (closing.process().exitCode === null) closing.process().kill('SIGKILL');
+  }, 10000);
+  timeout.unref();
+  try { await closing.close(); } finally { clearTimeout(timeout); }
+}
 const executable = process.env.AGENT_SWITCHER_EXECUTABLE;
+const stage = (name) => { if (process.env.CI) console.log(`Electron smoke: ${name}`); };
 const launchOptions = {
   env: environment, timeout: 45000,
   ...(executable ? { executablePath: resolve(executable), args: [`--user-data-dir=${dataDirectory}`] } : { args: [resolve('out/main/index.js')] }),
 };
 try {
+  stage('launch isolated application');
   application = await electron.launch(launchOptions);
+  stage('attached to main process');
   expect(await application.evaluate(({ app }) => app.getPath('userData'))).toBe(dataDirectory);
   const page = await application.firstWindow({ timeout: 45000 });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await expect(page.getByText('CODEX 配置', { exact: true })).toBeVisible({ timeout: 45000 });
+  stage('panel ready');
   const initial = await page.evaluate(() => window.agentSwitcher.getState());
   expect(initial.settings.codexHome).toBe(codexHome);
   expect(initial.settings.language).toBe('zh-CN');
@@ -84,6 +105,7 @@ try {
     expect(bounds.x + bounds.width).toBeGreaterThanOrEqual(display.workArea.x + display.workArea.width - 60);
   }
   const fixtureKey = 'sk-local-smoke-fixture-no-api-requests';
+  stage('verify OS encryption and configuration windows');
   const saved = await page.evaluate(async ({ settings, key }) => window.agentSwitcher.saveSettings({ ...settings, apiKey: key, language: 'en', hideOnBlur: false }), { settings: initial.settings, key: fixtureKey });
   expect(saved.hasApiKey).toBe(true);
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
@@ -140,8 +162,8 @@ try {
   });
   expect(invalid).toBe('INVALID_PROFILE');
   expect(errors).toEqual([]);
-  await application.close();
-  application = undefined;
+  await closeApplication();
+  stage('verify encrypted persistence after reload');
 
   // An upgrade with the old preference enabled must also keep the panel open.
   const legacy = JSON.parse(await readFile(join(dataDirectory, 'settings.json'), 'utf8'));
@@ -174,7 +196,8 @@ try {
   expect((await reopened.evaluate(() => window.agentSwitcher.getState())).hasApiKey).toBe(false);
   console.log(`Electron smoke passed: tray positioning on ${displays.length} display(s), persistent panel on blur/upgrade, explicit hide, two native windows, draft retention, profile CRUD, encryption and sandbox. No Codex restart/API call.`);
 } finally {
-  await application?.close();
+  clearTimeout(deadline);
+  await closeApplication();
   const absolute = resolve(directory);
   if (!absolute.startsWith(`${resolve(tmpdir())}${sep}`) || !basename(absolute).startsWith('agent-switcher-electron-')) throw new Error('Unsafe smoke cleanup path');
   await rm(absolute, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
