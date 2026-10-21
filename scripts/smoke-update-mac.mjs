@@ -80,6 +80,26 @@ try {
   expect((await run('/usr/bin/codesign', ['--display', '--entitlements', '-', join(futureApp, rendererBundle)])).stdout)
     .toBe((await run('/usr/bin/codesign', ['--display', '--entitlements', '-', join(sourceApp, rendererBundle)])).stdout);
   await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', futureApp]);
+  const testKeychain = process.env.AGENT_SWITCHER_TEST_KEYCHAIN;
+  if (testKeychain) {
+    // Ordinary -A access does not bypass the additional code-signing partition
+    // list. Authorize both ad-hoc identities only in the disposable CI keychain.
+    if (!process.env.CI || !process.env.RUNNER_TEMP || !process.env.AGENT_SWITCHER_TEST_KEYCHAIN_PASSWORD ||
+        resolve(testKeychain) !== join(resolve(process.env.RUNNER_TEMP), 'agent-switcher-smoke.keychain-db')) {
+      throw new Error('Expected the disposable CI test keychain');
+    }
+    const hashes = [];
+    for (const bundle of [sourceApp, futureApp]) {
+      const signature = await run('/usr/bin/codesign', ['--display', '--verbose=4', bundle]);
+      const hash = /^CDHash=([0-9a-f]{40})$/m.exec(signature.stderr)?.[1];
+      if (!hash) throw new Error('Missing disposable application signature hash');
+      hashes.push(`cdhash:${hash}`);
+    }
+    try {
+      await run('/usr/bin/security', ['set-generic-password-partition-list', '-a', 'AgentSwitcher', '-s', 'AgentSwitcher Safe Storage',
+        '-S', ['apple-tool:', 'apple:', ...hashes].join(','), '-k', process.env.AGENT_SWITCHER_TEST_KEYCHAIN_PASSWORD, testKeychain]);
+    } catch { throw new Error('Could not authorize the disposable update test keychain'); }
+  }
   const asset = `AgentSwitcher-${futureVersion}-mac-${process.arch}.zip`;
   const archive = join(directory, asset);
   await run('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', futureApp, archive]);

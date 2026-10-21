@@ -120,6 +120,13 @@ jobs:
           fixture_password="$(openssl rand -base64 24)"
           echo "::add-mask::$fixture_password"
           security add-generic-password -a AgentSwitcher -s 'AgentSwitcher Safe Storage' -w "$fixture_password" -A "$keychain"
+          echo "AGENT_SWITCHER_TEST_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "AGENT_SWITCHER_TEST_KEYCHAIN_PASSWORD=$keychain_password" >> "$GITHUB_ENV"
+          # LaunchServices restarts the fixture in the GUI audit session;
+          # keychain unlock state is separate from the runner's CLI session.
+          runner_uid="$(id -u)"
+          runner_user="$(id -un)"
+          sudo -n /bin/launchctl asuser "$runner_uid" /usr/bin/sudo -n -u "$runner_user" /usr/bin/security unlock-keychain -p "$keychain_password" "$keychain"
       - name: Test packaged application
         timeout-minutes: 5
         run: node .release-tools/scripts/smoke-electron.mjs
