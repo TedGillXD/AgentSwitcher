@@ -42,6 +42,20 @@ async function closeApplication() {
   timeout.unref();
   try { await closing.close(); } finally { clearTimeout(timeout); }
 }
+async function clickToHide(page, button) {
+  const window = await application.browserWindow(page);
+  const hidden = () => window.evaluate(target => !target.isDestroyed() && !target.isVisible());
+  try {
+    expect(await window.evaluate(target => !target.isDestroyed() && target.isVisible())).toBe(true);
+    try { await button.click({ timeout: 5000 }); }
+    catch (error) {
+      // Windows can hide the native window before the input acknowledgement
+      // reaches Playwright. Accept only a completed hide of this same window.
+      if (error.name !== 'TimeoutError' || !await hidden().catch(() => false)) throw error;
+    }
+    await expect.poll(hidden).toBe(true);
+  } finally { await window.dispose(); }
+}
 const executable = process.env.AGENT_SWITCHER_EXECUTABLE;
 const stage = (name) => { if (process.env.CI) console.log(`Electron smoke: ${name}`); };
 const launchOptions = {
@@ -154,7 +168,7 @@ try {
   await expect(manager.locator('#base-url')).toHaveValue('https://provider.example/v1');
   expect(await manager.locator('#api-key').inputValue()).toBe('');
   await manager.locator('#profile-name').fill('Unsaved native window draft');
-  await manager.getByRole('button', { name: 'Close settings', exact: true }).click();
+  await clickToHide(manager, manager.getByRole('button', { name: 'Close settings', exact: true }));
   expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(target => target.webContents.getURL().includes('window=settings')).isVisible())).toBe(false);
   await page.evaluate(() => window.agentSwitcher.openSettings());
   await expect(manager.locator('#profile-name')).toHaveValue('Unsaved native window draft');
@@ -167,7 +181,7 @@ try {
   expect(JSON.parse(multiPersisted).version).toBe(2);
   expect(await manager.evaluate(() => localStorage.length)).toBe(0);
   await page.screenshot({ path: 'test-results/electron-profiles.png' });
-  await page.getByRole('button', { name: 'Hide to tray', exact: true }).click();
+  await clickToHide(page, page.getByRole('button', { name: 'Hide to tray', exact: true }));
   expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(target => !target.webContents.getURL().includes('window=settings')).isVisible())).toBe(false);
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(target => !target.webContents.getURL().includes('window=settings')).show());
   // Invalid IPC input is rejected by the main process, before any process/config mutation.
@@ -384,7 +398,7 @@ try {
   const activePage = await application.firstWindow({ timeout: 45000 });
   await expect(activePage.locator('html')).toHaveAttribute('lang', 'en', { timeout: 45000 });
   expect((await activePage.evaluate(() => window.agentSwitcher.getState())).bridgeRunning).toBe(true);
-  await activePage.getByRole('button', { name: 'Hide to tray', exact: true }).click();
+  await clickToHide(activePage, activePage.getByRole('button', { name: 'Hide to tray', exact: true }));
   await application.evaluate(({ app, BrowserWindow, dialog }) => {
     globalThis.__smokeOriginalMessageBox = dialog.showMessageBox;
     globalThis.__smokeMessages = [];
