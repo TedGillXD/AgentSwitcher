@@ -162,8 +162,17 @@ try {
   const installer = join(userData, 'updates/installer');
   for (const name of await readdir(installer).catch(() => [])) {
     if (name.endsWith('.result')) console.error('Installer helper result:', await readFile(join(installer, name), 'utf8'));
+    if (name === 'pending-install.json') console.error('Pending installer receipt:', await readFile(join(installer, name), 'utf8'));
   }
-  console.error('Remaining disposable process IDs:', await fixtureProcesses());
+  console.error('Installed bundle version:', (await run('/usr/bin/plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', join(installedApp, 'Contents/Info.plist')]).catch(() => ({ stdout: 'unavailable' }))).stdout.trim());
+  const remaining = await fixtureProcesses();
+  console.error('Remaining disposable process IDs:', remaining);
+  if (process.env.CI) for (const pid of remaining) {
+    // Only sample the exact disposable executable, never other desktop apps.
+    const sample = join(directory, `process-${pid}.sample`);
+    await run('/usr/bin/sample', [String(pid), '1', '1', '-file', sample]).catch(() => undefined);
+    console.error('Disposable application stack:', (await readFile(sample, 'utf8').catch(() => 'Sample unavailable')).slice(0, 18000));
+  }
   throw error;
 } finally {
   if (!oldExited && child?.exitCode === null) {
