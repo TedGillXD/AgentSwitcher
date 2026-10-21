@@ -86,7 +86,7 @@ jobs:
         if: runner.os == 'Windows'
         # macOS runs the packaged binary below so a second app identity cannot
         # prompt for access to the same Safe Storage Keychain item.
-        run: pnpm test:electron
+        run: node .release-tools/scripts/smoke-electron.mjs
       - name: Package Windows installer
         if: runner.os == 'Windows'
         run: pnpm exec electron-builder --win nsis --${{ matrix.arch }} --publish never

@@ -9,6 +9,16 @@ const directory = await mkdtemp(join(tmpdir(), 'agent-switcher-electron-'));
 const dataDirectory = join(directory, 'user-data');
 const codexHome = join(directory, 'codex');
 await mkdir(codexHome, { recursive: true });
+await mkdir(dataDirectory, { recursive: true });
+// Keep this IPC/encryption test independent of real desktop installations and
+// slow Store discovery. Process control has its own disposable native fixture.
+await writeFile(join(dataDirectory, 'settings.json'), JSON.stringify({
+  version: 1, lastSwitchedAt: null,
+  settings: { language: 'zh-CN', codexHome,
+    codexAppPath: join(directory, 'not-installed', process.platform === 'darwin' ? 'Codex.app' : 'Codex.exe'),
+    deepseekBaseUrl: 'https://api.deepseek.com', deepseekModel: 'deepseek-flash',
+    launchAtLogin: false, hideOnBlur: true },
+}));
 await mkdir('test-results', { recursive: true });
 const environment = { ...process.env, AGENT_SWITCHER_USER_DATA: dataDirectory, CODEX_HOME: codexHome };
 delete environment.ELECTRON_RUN_AS_NODE;
@@ -53,6 +63,7 @@ try {
   expect(initial.settings.language).toBe('zh-CN');
   expect(initial.hasApiKey).toBe(false);
   expect(initial.encryptionAvailable).toBe(true);
+  expect(initial.codexInstalled).toBe(false);
   expect(initial.settings.hideOnBlur).toBe(false);
   expect(await page.evaluate(() => typeof require)).toBe('undefined');
   expect(await page.evaluate(() => typeof process)).toBe('undefined');
@@ -181,6 +192,7 @@ try {
   expect(loaded.settings.codexHome).toBe(codexHome);
   expect(loaded.settings.hideOnBlur).toBe(false);
   expect(await readFile(join(dataDirectory, 'settings.json'), 'utf8')).toBe(legacyText);
+  await expect.poll(() => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(true);
   expect(await application.evaluate(({ BrowserWindow }) => {
     const panel = BrowserWindow.getAllWindows()[0]; panel.emit('blur'); return panel.isVisible();
   })).toBe(true);
