@@ -77,7 +77,7 @@ describe('prepared update installation', () => {
     const [shell, args] = f.start.mock.calls[0]!;
     expect(shell).toBe('/bin/sh');
     expect(args).toContain(f.target);
-    expect((await lstat(args[0]!)).mode & 0o777).toBe(0o700);
+    if (process.platform !== 'win32') expect((await lstat(args[0]!)).mode & 0o777).toBe(0o700);
   });
 
   it('rejects the wrong bundle identity or version before creating an install plan', async () => {
@@ -139,7 +139,7 @@ describe('prepared update installation', () => {
     expect(await readFile(f.executable, 'utf8')).toBe('old exe');
   });
 
-  it('refuses Windows argument quoting and control characters', async () => {
+  it.skipIf(process.platform === 'win32')('refuses Windows argument quoting before launching an installer', async () => {
     const f = await fixture('win32');
     const unsafe = join(f.root, 'unsafe"setup.exe');
     await writeFile(unsafe, 'fixture');

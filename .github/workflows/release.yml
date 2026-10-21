@@ -65,6 +65,7 @@ jobs:
           sparse-checkout: |
             scripts/smoke-electron.mjs
             scripts/smoke-update-mac.mjs
+            tests/update-installer.test.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: pnpm/action-setup@v4
@@ -80,6 +81,10 @@ jobs:
           if(!/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(process.env.RELEASE_TAG)||process.env.RELEASE_TAG!=='v'+p.version)throw new Error('Tag must match package.json version');
           if(process.arch!==process.env.TARGET_ARCH)throw new Error('Native runner architecture mismatch');"
       - run: pnpm install --frozen-lockfile
+      - name: Use current installer verification tests
+        # Verification fixes may follow an immutable application tag. Only the
+        # tests are copied; the application being built stays pinned above.
+        run: node -e "require('node:fs').copyFileSync('.release-tools/tests/update-installer.test.ts', 'tests/update-installer.test.ts')"
       - run: pnpm test
       - if: runner.os == 'Windows'
         run: pnpm test:force-stop
