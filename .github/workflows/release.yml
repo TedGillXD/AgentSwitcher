@@ -180,7 +180,9 @@ jobs:
           - macOS x64: Intel Mac；macOS arm64: Apple Silicon (M1 及更新)。
           - macOS 使用 DMG 安装，也提供 ZIP；SHA256SUMS.txt 可校验下载文件。
 
-          包含多配置管理、中英双语、独立加密密钥，以及托盘面板定位和保持打开修复。
+          修复关闭和退出无响应的问题：加载失败或操作仍在等待时，关闭按钮仍可收起窗口；保存或切换未完成时，退出会明确提示等待。系统确认框显示在所属窗口上方，后台错误会显示在界面中，取消或弹窗失败后可以重试退出。
+
+          Fixes unresponsive close and quit controls during loading and pending operations. Quit requests now report why they cannot finish, native dialogs remain above their owner window, and failed or cancelled confirmations can be retried. Includes regression checks for actual window controls and process exit.
 
           当前社区构建没有 Windows 代码签名或 Apple Developer ID / 公证。macOS 包采用 ad-hoc 签名。系统可能要求通过“系统设置 → 隐私与安全性 → 仍要打开”确认后运行。
 

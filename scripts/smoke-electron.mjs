@@ -1,7 +1,9 @@
 // Real Electron + preload + OS encryption, with isolated user-data/Codex folders.
 // This test never switches profiles, stops Codex, or calls a paid provider API.
 import { _electron as electron, expect } from '@playwright/test';
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 
@@ -152,7 +154,7 @@ try {
   await expect(manager.locator('#base-url')).toHaveValue('https://provider.example/v1');
   expect(await manager.locator('#api-key').inputValue()).toBe('');
   await manager.locator('#profile-name').fill('Unsaved native window draft');
-  await manager.evaluate(() => window.agentSwitcher.closeSettings());
+  await manager.getByRole('button', { name: 'Close settings', exact: true }).click();
   expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(target => target.webContents.getURL().includes('window=settings')).isVisible())).toBe(false);
   await page.evaluate(() => window.agentSwitcher.openSettings());
   await expect(manager.locator('#profile-name')).toHaveValue('Unsaved native window draft');
@@ -165,7 +167,7 @@ try {
   expect(JSON.parse(multiPersisted).version).toBe(2);
   expect(await manager.evaluate(() => localStorage.length)).toBe(0);
   await page.screenshot({ path: 'test-results/electron-profiles.png' });
-  await page.evaluate(() => window.agentSwitcher.hideWindow());
+  await page.getByRole('button', { name: 'Hide to tray', exact: true }).click();
   expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(target => !target.webContents.getURL().includes('window=settings')).isVisible())).toBe(false);
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(target => !target.webContents.getURL().includes('window=settings')).show());
   // Invalid IPC input is rejected by the main process, before any process/config mutation.
@@ -208,7 +210,159 @@ try {
   expect(deleted.profiles.some(profile => profile.id === reloadedProfile.id)).toBe(false);
   await reopened.evaluate((settings) => window.agentSwitcher.saveSettings({ ...settings, clearApiKey: true }), loaded.settings);
   expect((await reopened.evaluate(() => window.agentSwitcher.getState())).hasApiKey).toBe(false);
-  console.log(`Electron smoke passed: tray positioning on ${displays.length} display(s), persistent panel on blur/upgrade, explicit hide, two native windows, draft retention, profile CRUD, encryption and sandbox. No Codex restart/API call.`);
+
+  stage('verify busy quit requests receive feedback');
+  // Keep a configuration save pending without sending a network request. Only
+  // this isolated main process receives the temporary fetch implementation.
+  await application.evaluate(() => {
+    globalThis.__smokeOriginalFetch = globalThis.fetch;
+    globalThis.fetch = () => new Promise(resolve => {
+      globalThis.__smokeCompleteFetch = () => resolve(new Response(JSON.stringify({ data: [{ id: 'pending-smoke-model' }] }), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    });
+  });
+  await reopened.evaluate(() => {
+    window.__smokePendingSave = window.agentSwitcher.saveProfile({
+      name: 'Pending save smoke', preset: 'custom', baseUrl: 'https://provider.example/v1',
+      protocol: 'responses', apiKey: 'sk-pending-smoke-fixture-no-api-requests',
+    }).then(value => ({ value }), error => ({ error: error.message }));
+  });
+  await expect.poll(() => application.evaluate(() => typeof globalThis.__smokeCompleteFetch)).toBe('function');
+  expect(await reopened.evaluate(async () => {
+    try { await window.agentSwitcher.quit(); return 'unexpected success'; }
+    catch (error) { return error.message; }
+  })).toBe('SWITCH_IN_PROGRESS');
+  await application.evaluate(({ app, BrowserWindow, dialog, Tray }) => {
+    globalThis.__smokeOriginalMessageBox = dialog.showMessageBox;
+    globalThis.__smokeMessages = [];
+    dialog.showMessageBox = async (...args) => {
+      const owner = args[0] instanceof BrowserWindow ? args[0] : undefined;
+      const options = owner ? args[1] : args[0];
+      globalThis.__smokeMessages.push({ type: options.type, detail: options.detail, ownerVisible: owner?.isVisible() ?? false });
+      return { response: 0, checkboxChecked: false };
+    };
+    // Capture a refreshed real tray menu so its availability and click callback
+    // are tested while the service is busy, just as a menu-bar click would be.
+    globalThis.__smokeOriginalSetContextMenu = Tray.prototype.setContextMenu;
+    Tray.prototype.setContextMenu = function (menu) {
+      globalThis.__smokeTrayMenu = menu;
+      return globalThis.__smokeOriginalSetContextMenu.call(this, menu);
+    };
+    app.emit('second-instance');
+  });
+  await expect.poll(() => application.evaluate(() => Boolean(globalThis.__smokeTrayMenu))).toBe(true);
+  expect(await application.evaluate(({ Tray }) => {
+    Tray.prototype.setContextMenu = globalThis.__smokeOriginalSetContextMenu;
+    const quit = globalThis.__smokeTrayMenu.items.find(item => item.label === 'Quit');
+    if (!quit) throw new Error('Missing tray quit action');
+    quit.click();
+    return quit.enabled;
+  })).toBe(true);
+  await expect.poll(() => application.evaluate(() => globalThis.__smokeMessages)).toEqual([
+    { type: 'info', detail: 'SWITCH_IN_PROGRESS', ownerVisible: true },
+  ]);
+  await application.evaluate(({ dialog }) => {
+    dialog.showMessageBox = globalThis.__smokeOriginalMessageBox;
+  });
+
+  // An existing native picker takes priority even while the save is busy, so
+  // another quit request can focus it instead of attempting a second modal.
+  await application.evaluate(({ dialog }) => {
+    globalThis.__smokeOriginalOpenDialog = dialog.showOpenDialog;
+    dialog.showOpenDialog = () => new Promise(resolve => {
+      globalThis.__smokeCompleteDialog = () => resolve({ canceled: true, filePaths: [] });
+    });
+  });
+  await reopened.evaluate(() => {
+    window.__smokePendingDialog = window.agentSwitcher.chooseCodexHome();
+  });
+  await expect.poll(() => application.evaluate(() => typeof globalThis.__smokeCompleteDialog)).toBe('function');
+  expect(await reopened.evaluate(async () => {
+    try { await window.agentSwitcher.quit(); return 'unexpected success'; }
+    catch (error) { return error.message; }
+  })).toBe('DIALOG_IN_PROGRESS');
+  await application.evaluate(({ dialog }) => {
+    globalThis.__smokeCompleteDialog();
+    dialog.showOpenDialog = globalThis.__smokeOriginalOpenDialog;
+  });
+  expect(await reopened.evaluate(() => window.__smokePendingDialog)).toBeNull();
+  await application.evaluate(() => {
+    globalThis.__smokeCompleteFetch();
+    globalThis.fetch = globalThis.__smokeOriginalFetch;
+  });
+  const completedSave = await reopened.evaluate(() => window.__smokePendingSave);
+  expect(completedSave.error).toBeUndefined();
+
+  // Prepare an active API fixture for startup. The bridge only listens on
+  // loopback; no Codex process is launched and no upstream request is made.
+  const reservation = createServer();
+  await new Promise((resolve, reject) => {
+    reservation.once('error', reject);
+    reservation.listen(0, '127.0.0.1', resolve);
+  });
+  const bridgePort = reservation.address().port;
+  await new Promise((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
+  const bridgeToken = randomBytes(32).toString('hex');
+  const encryptedSecrets = await application.evaluate(({ safeStorage }, secrets) => safeStorage.encryptString(JSON.stringify(secrets)).toString('base64'), {
+    apiKey: fixtureKey, activeProfileId: 'deepseek', bridgePort, bridgeToken,
+  });
+  await closeApplication();
+  const activeFixture = JSON.parse(await readFile(join(dataDirectory, 'settings.json'), 'utf8'));
+  activeFixture.encryptedSecrets = encryptedSecrets;
+  await writeFile(join(dataDirectory, 'settings.json'), JSON.stringify(activeFixture));
+  await writeFile(join(codexHome, 'config.toml'), [
+    'model = "deepseek-flash"', 'model_provider = "agent_switcher_deepseek"',
+    '[model_providers.agent_switcher_deepseek]', `base_url = "http://127.0.0.1:${bridgePort}/v1"`,
+    `experimental_bearer_token = "${bridgeToken}"`, '',
+  ].join('\n'));
+
+  stage('verify native quit confirmation ownership and recovery');
+  application = await electron.launch(launchOptions);
+  const activePage = await application.firstWindow({ timeout: 45000 });
+  await expect(activePage.locator('html')).toHaveAttribute('lang', 'en', { timeout: 45000 });
+  expect((await activePage.evaluate(() => window.agentSwitcher.getState())).bridgeRunning).toBe(true);
+  await activePage.getByRole('button', { name: 'Hide to tray', exact: true }).click();
+  await application.evaluate(({ app, BrowserWindow, dialog }) => {
+    globalThis.__smokeOriginalMessageBox = dialog.showMessageBox;
+    globalThis.__smokeMessages = [];
+    globalThis.__smokeRejectQuestion = false;
+    dialog.showMessageBox = async (...args) => {
+      const owner = args[0] instanceof BrowserWindow ? args[0] : undefined;
+      const options = owner ? args[1] : args[0];
+      globalThis.__smokeMessages.push({ type: options.type, detail: options.detail, ownerVisible: owner?.isVisible() ?? false });
+      if (options.type === 'question' && globalThis.__smokeRejectQuestion) {
+        globalThis.__smokeRejectQuestion = false;
+        throw new Error('OPERATION_FAILED');
+      }
+      return { response: 0, checkboxChecked: false };
+    };
+    app.emit('before-quit', { preventDefault() {} });
+  });
+  await expect.poll(() => application.evaluate(() => globalThis.__smokeMessages.length)).toBe(1);
+  expect(await application.evaluate(() => globalThis.__smokeMessages[0])).toMatchObject({ type: 'question', ownerVisible: true });
+  expect(application.process().exitCode).toBeNull();
+  await application.evaluate(({ app }) => {
+    globalThis.__smokeRejectQuestion = true;
+    app.emit('before-quit', { preventDefault() {} });
+  });
+  await expect.poll(() => application.evaluate(() => globalThis.__smokeMessages.length)).toBe(3);
+  expect(await application.evaluate(() => globalThis.__smokeMessages[2])).toMatchObject({ type: 'info', detail: 'OPERATION_FAILED', ownerVisible: true });
+  await application.evaluate(({ app }) => app.emit('before-quit', { preventDefault() {} }));
+  await expect.poll(() => application.evaluate(() => globalThis.__smokeMessages.length)).toBe(4);
+  expect(await application.evaluate(() => globalThis.__smokeMessages[3])).toMatchObject({ type: 'question', ownerVisible: true });
+
+  stage('verify actual quit button exits the isolated process');
+  // Playwright disposes the application dispatcher on exit; retain the child
+  // before clicking Quit so observing exitCode does not access a closed handle.
+  const quittingProcess = application.process();
+  await activePage.getByRole('button', { name: 'More actions', exact: true }).click();
+  await activePage.getByRole('menuitem', { name: 'Quit Agent Switcher', exact: true }).click();
+  await expect(activePage.getByRole('alertdialog')).toBeVisible();
+  await activePage.getByRole('alertdialog').getByRole('button', { name: 'Quit Agent Switcher', exact: true }).click();
+  await expect.poll(() => quittingProcess.exitCode, { timeout: 10000 }).toBe(0);
+  application = undefined;
+  console.log(`Electron smoke passed: tray positioning on ${displays.length} display(s), persistent panel on blur/upgrade, actual close buttons, two native windows, draft retention, profile CRUD, encryption, sandbox, busy quit feedback, owned native dialogs, retry after dialog failure and actual process exit. No Codex restart/API call.`);
 } finally {
   clearTimeout(deadline);
   await closeApplication();

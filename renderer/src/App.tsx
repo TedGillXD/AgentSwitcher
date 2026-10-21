@@ -20,7 +20,7 @@ const previewSettings: Settings = {
   deepseekModel: 'deepseek-flash', launchAtLogin: false, hideOnBlur: false,
 };
 const previewState: AppState = {
-  version: '0.2.2', platform: 'preview', settings: previewSettings,
+  version: '0.2.3', platform: 'preview', settings: previewSettings,
   profiles: [{ id: 'deepseek', name: 'DeepSeek', preset: 'deepseek', baseUrl: 'https://api.deepseek.com', protocol: 'auto', modelIds: ['deepseek-flash', 'deepseek-v4-pro'], defaultModel: 'deepseek-flash', hasApiKey: false }],
   activeProfile: 'chatgpt', hasApiKey: false, encryptionAvailable: true, codexInstalled: true,
   codexRunning: true, detectedAppPath: null, bridgeRunning: false, lastSwitchedAt: null, lastError: null,
@@ -56,26 +56,43 @@ function App() {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastStateError = useRef<string | null>(null);
+  const loadFailureNotice = useRef<Notice | null>(null);
   const t = translator(state.settings.language);
   const report = useCallback((value: Notice) => {
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     setNotice(value);
     if (value.kind === 'success') noticeTimer.current = setTimeout(() => setNotice(null), 6000);
   }, []);
+  const applyState = useCallback((next: AppState) => {
+    setState(next); setLoaded(true); setLoadFailed(false);
+    const failureNotice = loadFailureNotice.current;
+    if (failureNotice) {
+      setNotice((current) => current === failureNotice ? null : current);
+      loadFailureNotice.current = null;
+    }
+    if (next.lastError && next.lastError !== lastStateError.current) {
+      report({ kind: 'error', text: friendlyError(next.lastError, next.settings.language) });
+    }
+    lastStateError.current = next.lastError;
+  }, [report]);
   const load = useCallback(async () => {
     if (!api) return;
     setLoadFailed(false);
     try {
-      const next = await api.getState();
-      setState(next); setLoaded(true);
-      if (next.lastError) report({ kind: 'error', text: friendlyError(next.lastError, next.settings.language) });
-    } catch (error) { setLoadFailed(true); report({ kind: 'error', text: friendlyError(error, 'zh-CN') }); }
-  }, [report]);
+      applyState(await api.getState());
+    } catch (error) {
+      setLoadFailed(true);
+      const failureNotice: Notice = { kind: 'error', text: friendlyError(error, 'zh-CN') };
+      loadFailureNotice.current = failureNotice;
+      report(failureNotice);
+    }
+  }, [applyState, report]);
   useEffect(() => {
     void load();
-    const unsubscribe = api?.onStateChanged(setState);
+    const unsubscribe = api?.onStateChanged(applyState);
     return () => { unsubscribe?.(); if (noticeTimer.current) clearTimeout(noticeTimer.current); };
-  }, [load]);
+  }, [load, applyState]);
   useEffect(() => {
     document.documentElement.lang = state.settings.language;
     document.title = isManager ? t('manager') : 'Agent Switcher';
@@ -87,12 +104,16 @@ function App() {
     catch (error) { report({ kind: 'error', text: friendlyError(error, state.settings.language) }); return false; }
     finally { setBusy(null); }
   };
+  const runWindowAction = async (task: () => Promise<void>): Promise<void> => {
+    try { await task(); }
+    catch (error) { report({ kind: 'error', text: friendlyError(error, state.settings.language) }); }
+  };
   const changeLanguage = async (language: Language) => {
     if (language === state.settings.language) return;
     if (!api) { setState((old) => ({ ...old, settings: { ...old.settings, language } })); return; }
-    await run('language', async () => { setState(await api.saveSettings({ ...state.settings, language })); });
+    await run('language', async () => { applyState(await api.saveSettings({ ...state.settings, language })); });
   };
-  const controller: Controller = { state, setState, t, busy, loaded, disabled: !!busy || !api || !loaded, run, report, confirm: setConfirmation, changeLanguage };
+  const controller: Controller = { state, setState: applyState, t, busy, loaded, disabled: !!busy || !api || !loaded, run, report, confirm: setConfirmation, changeLanguage };
   const handleConfirm = async () => {
     const action = confirmation;
     if (!action) return;
@@ -100,13 +121,13 @@ function App() {
     if (action.kind === 'discard') { action.next(); return; }
     if (action.kind === 'switch') await run(`switch:${action.id}`, async () => {
       const result = await api!.switchProfile(action.id);
-      setState(result.state); report({ kind: 'success', text: t('switched', { name: action.name }) });
+      applyState(result.state); report({ kind: 'success', text: t('switched', { name: action.name }) });
     });
-    if (action.kind === 'restart') await run('restart', async () => { setState(await api!.restartCodex()); report({ kind: 'success', text: t('restarted') }); });
-    if (action.kind === 'quit') await run('quit', () => api!.quit());
+    if (action.kind === 'restart') await run('restart', async () => { applyState(await api!.restartCodex()); report({ kind: 'success', text: t('restarted') }); });
+    if (action.kind === 'quit') await runWindowAction(() => api!.quit(true));
     if (action.kind === 'delete') await run('delete', async () => {
       const next = await api!.deleteProfile(action.profile.id);
-      setState(next); action.onDeleted(next); report({ kind: 'success', text: t('profileDeleted') });
+      applyState(next); action.onDeleted(next); report({ kind: 'success', text: t('profileDeleted') });
     });
   };
   return <div className={`app-shell ${isManager ? 'manager-shell' : 'panel-shell'}`}>
@@ -116,10 +137,10 @@ function App() {
         <button className="icon-button language-button" aria-label={t('language')} title={t('language')} disabled={!!busy} onClick={() => void changeLanguage(state.settings.language === 'zh-CN' ? 'en' : 'zh-CN')}><Globe2 size={15} /><span>{state.settings.language === 'zh-CN' ? 'EN' : '中'}</span></button>
         {!isManager && <div className="menu-anchor"><button className={`icon-button ${menuOpen ? 'selected' : ''}`} aria-label={t('more')} title={t('more')} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}><Ellipsis size={19} /></button>{menuOpen && <><button className="menu-dismiss" aria-label={t('cancel')} onClick={() => setMenuOpen(false)} /><div className="popover-menu" role="menu">
           <button role="menuitem" disabled={controller.disabled} onClick={() => { setMenuOpen(false); void run('manage', () => api!.openSettings()); }}><Settings2 size={14} />{t('manage')}</button>
-          <button role="menuitem" disabled={controller.disabled} onClick={() => { setMenuOpen(false); void run('refresh', async () => setState(await api!.getState())); }}><RefreshCw size={14} />{t('refresh')}</button>
-          <div className="menu-divider" /><button role="menuitem" disabled={controller.disabled} onClick={() => { setMenuOpen(false); if (state.bridgeRunning) setConfirmation({ kind: 'quit' }); else void run('quit', () => api!.quit()); }}><Power size={14} />{t('quit')}</button>
+          <button role="menuitem" disabled={controller.disabled} onClick={() => { setMenuOpen(false); void run('refresh', async () => applyState(await api!.getState())); }}><RefreshCw size={14} />{t('refresh')}</button>
+          <div className="menu-divider" /><button role="menuitem" disabled={!api} onClick={() => { setMenuOpen(false); if (state.bridgeRunning) setConfirmation({ kind: 'quit' }); else void runWindowAction(() => api!.quit()); }}><Power size={14} />{t('quit')}</button>
         </div></>}</div>}
-        <button className="icon-button" aria-label={t(isManager ? 'close' : 'hide')} title={t(isManager ? 'close' : 'hide')} disabled={!api || !!busy} onClick={() => void run('hide', () => isManager ? api!.closeSettings() : api!.hideWindow())}><X size={17} /></button>
+        <button className="icon-button" aria-label={t(isManager ? 'close' : 'hide')} title={t(isManager ? 'close' : 'hide')} disabled={!api} onClick={() => void runWindowAction(() => isManager ? api!.closeSettings() : api!.hideWindow())}><X size={17} /></button>
       </div>
     </header>
     {!api && <div className="preview-banner"><span>{t('preview')}</span>{t('previewHint')}</div>}

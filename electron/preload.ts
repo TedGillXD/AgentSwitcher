@@ -29,7 +29,7 @@ const api: AgentSwitcherApi = {
   chooseCodexHome: () => invoke('switcher:choose-home'),
   openConfigFolder: () => invoke('switcher:open-config'),
   hideWindow: () => invoke('switcher:hide'),
-  quit: () => invoke('switcher:quit'),
+  quit: (confirmed) => invoke('switcher:quit', confirmed),
   onStateChanged: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, state: AppState) => callback(state);
     ipcRenderer.on('switcher:changed', listener);

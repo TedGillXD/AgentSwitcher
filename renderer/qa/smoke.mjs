@@ -16,6 +16,7 @@ const url = process.env.AGENT_SWITCHER_PREVIEW_URL || 'http://127.0.0.1:5173';
 const panel = await context.newPage();
 let manager;
 const calls = [];
+const requestOverrides = new Map();
 let failSwitch = false;
 let nextId = 1;
 const profiles = [
@@ -25,7 +26,7 @@ const profiles = [
 ];
 const keys = new Map(profiles.map((profile) => [profile.id, 'existing-mock-key']));
 let state = {
-  version: '0.2.2', platform: 'win32',
+  version: '0.2.3', platform: 'win32',
   settings: { language: 'zh-CN', codexHome: '', codexAppPath: '', deepseekBaseUrl: 'https://api.deepseek.com', deepseekModel: 'deepseek-flash', launchAtLogin: false, hideOnBlur: false },
   profiles, activeProfile: 'chatgpt', hasApiKey: true, encryptionAvailable: true,
   codexInstalled: true, codexRunning: true, detectedAppPath: 'C:\\Apps\\Codex.exe',
@@ -44,6 +45,16 @@ async function noOverflow(page) {
 }
 async function emptyBrowserStorage(page) { expect(await page.evaluate(() => localStorage.length)).toBe(0); }
 async function selectSidebar(name) { await manager.locator('.profile-navigation').getByRole('button', { name }).click(); }
+const callCount = (method) => calls.filter((call) => call.method === method).length;
+async function clickWindowAction(page, buttonName, method) {
+  const before = callCount(method);
+  await page.getByRole('button', { name: buttonName, exact: true }).click();
+  await expect.poll(() => callCount(method)).toBe(before + 1);
+}
+async function openQuitMenu(page) {
+  await page.getByRole('button', { name: '更多操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '退出 Agent Switcher', exact: true }).click();
+}
 
 try {
   // Browser mode is labeled and cannot perform desktop mutations.
@@ -63,6 +74,8 @@ try {
 
   await context.exposeBinding('__mockInvoke', async ({ page }, method, input) => {
     calls.push({ method, input: structuredClone(input) });
+    const override = requestOverrides.get(page)?.[method];
+    if (override) return override(input);
     if (method === 'getState') return snapshot();
     if (method === 'openSettings') {
       if (!manager || manager.isClosed()) {
@@ -229,6 +242,117 @@ try {
   await expect(panel.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await noOverflow(manager); await noOverflow(panel);
   await emptyBrowserStorage(manager); await emptyBrowserStorage(panel);
+
+  // Window controls remain available when the first state request fails or hangs.
+  for (const loadMode of ['reject', 'pending']) {
+    for (const settingsWindow of [false, true]) {
+      const probe = await context.newPage();
+      let releaseLoad;
+      const pendingLoad = new Promise((resolve) => { releaseLoad = resolve; });
+      requestOverrides.set(probe, { getState: () => {
+        if (loadMode === 'reject') throw new Error('CONNECTION_FAILED');
+        return pendingLoad;
+      } });
+      try {
+        await probe.goto(`${url}/${settingsWindow ? '?window=settings' : ''}`);
+        if (loadMode === 'reject') await expect(probe.getByRole('alert')).toContainText('连接失败');
+        else await expect(probe.getByText('正在准备…', { exact: true })).toBeVisible();
+        await clickWindowAction(probe, settingsWindow ? '关闭设置' : '收起到托盘', settingsWindow ? 'closeSettings' : 'hideWindow');
+        if (!settingsWindow) {
+          const quits = callCount('quit');
+          await openQuitMenu(probe);
+          await expect.poll(() => callCount('quit')).toBe(quits + 1);
+        }
+      } finally {
+        releaseLoad(snapshot());
+        requestOverrides.delete(probe);
+        await probe.close();
+      }
+    }
+  }
+
+  // Hiding and a rejected quit must not release a business operation's busy lock.
+  const busyPanel = await context.newPage();
+  let releaseFolder;
+  const pendingFolder = new Promise((resolve) => { releaseFolder = resolve; });
+  requestOverrides.set(busyPanel, {
+    openConfigFolder: () => pendingFolder,
+    quit: () => { throw new Error('SWITCH_IN_PROGRESS'); },
+  });
+  try {
+    await busyPanel.goto(url);
+    await busyPanel.getByRole('button', { name: '打开配置目录', exact: true }).click();
+    await expect(busyPanel.getByRole('button', { name: '管理配置', exact: true })).toBeDisabled();
+    await clickWindowAction(busyPanel, '收起到托盘', 'hideWindow');
+    await expect(busyPanel.getByRole('button', { name: '管理配置', exact: true })).toBeDisabled();
+    await openQuitMenu(busyPanel);
+    await expect(busyPanel.getByRole('alert')).toContainText('当前操作尚未完成');
+    await expect(busyPanel.getByRole('button', { name: '管理配置', exact: true })).toBeDisabled();
+    releaseFolder();
+    await expect(busyPanel.getByRole('button', { name: '管理配置', exact: true })).toBeEnabled();
+  } finally {
+    releaseFolder(); requestOverrides.delete(busyPanel); await busyPanel.close();
+  }
+  const busyManager = await context.newPage();
+  let releaseDiscovery;
+  const pendingDiscovery = new Promise((resolve) => { releaseDiscovery = resolve; });
+  requestOverrides.set(busyManager, { testConnection: () => pendingDiscovery });
+  try {
+    await busyManager.goto(`${url}/?window=settings`);
+    await busyManager.getByLabel('API 地址', { exact: true }).fill('https://provider.example/v1');
+    await busyManager.getByLabel('API Key', { exact: true }).fill('pending-discovery-fixture');
+    await busyManager.getByRole('button', { name: '测试并发现模型', exact: true }).click();
+    await expect(busyManager.getByRole('button', { name: '正在发现…', exact: true })).toBeDisabled();
+    await clickWindowAction(busyManager, '关闭设置', 'closeSettings');
+    await expect(busyManager.getByRole('button', { name: '正在发现…', exact: true })).toBeDisabled();
+    releaseDiscovery({ ok: true, latencyMs: 0, models: ['fixture-model'] });
+    await expect(busyManager.getByRole('button', { name: '测试并发现模型', exact: true })).toBeEnabled();
+  } finally {
+    releaseDiscovery({ ok: true, latencyMs: 0, models: ['fixture-model'] });
+    requestOverrides.delete(busyManager); await busyManager.close();
+  }
+
+  // An active bridge still asks for confirmation before the quit IPC is sent.
+  const connectedPanel = await context.newPage();
+  requestOverrides.set(connectedPanel, { getState: () => ({ ...snapshot(), bridgeRunning: true }) });
+  try {
+    await connectedPanel.goto(url);
+    await expect(connectedPanel.locator('.profile-card')).not.toHaveCount(0);
+    const quits = callCount('quit');
+    await openQuitMenu(connectedPanel);
+    await expect(connectedPanel.getByRole('alertdialog')).toBeVisible();
+    expect(callCount('quit')).toBe(quits);
+    await connectedPanel.getByRole('button', { name: '取消', exact: true }).click();
+    expect(callCount('quit')).toBe(quits);
+    await openQuitMenu(connectedPanel);
+    await clickWindowAction(connectedPanel, '退出 Agent Switcher', 'quit');
+    expect(calls.filter((call) => call.method === 'quit').at(-1).input).toBe(true);
+  } finally { requestOverrides.delete(connectedPanel); await connectedPanel.close(); }
+
+  // A valid pushed state recovers a failed load and reports only changed errors.
+  const stateEventsPanel = await context.newPage();
+  requestOverrides.set(stateEventsPanel, { getState: () => { throw new Error('CONNECTION_FAILED'); } });
+  const pushState = (next) => stateEventsPanel.evaluate((value) => window.__stateListeners.forEach((listener) => listener(value)), next);
+  try {
+    await stateEventsPanel.goto(url);
+    await expect(stateEventsPanel.getByRole('alert')).toContainText('连接失败');
+    await pushState(snapshot());
+    await expect(stateEventsPanel.locator('.profile-card')).not.toHaveCount(0);
+    await expect(stateEventsPanel.getByRole('alert')).toHaveCount(0);
+    await pushState({ ...snapshot(), lastError: 'BRIDGE_START_FAILED' });
+    await expect(stateEventsPanel.getByRole('alert')).toContainText('本地连接未能启动');
+    await stateEventsPanel.getByRole('button', { name: '关闭提示', exact: true }).click();
+    await pushState({ ...snapshot(), lastError: 'BRIDGE_START_FAILED' });
+    await expect(stateEventsPanel.getByRole('alert')).toHaveCount(0);
+    await pushState(snapshot());
+    await stateEventsPanel.getByRole('button', { name: '重启 Codex', exact: true }).click();
+    await stateEventsPanel.getByRole('button', { name: '重启', exact: true }).click();
+    await expect(stateEventsPanel.getByRole('status')).toContainText('Codex 桌面应用已重启');
+    await pushState(snapshot());
+    await expect(stateEventsPanel.getByRole('status')).toContainText('Codex 桌面应用已重启');
+    await pushState({ ...snapshot(), lastError: 'BRIDGE_START_FAILED' });
+    await expect(stateEventsPanel.getByRole('alert')).toContainText('本地连接未能启动');
+  } finally { requestOverrides.delete(stateEventsPanel); await stateEventsPanel.close(); }
   expect(errors).toEqual([]);
   console.log(JSON.stringify({ ok: true, browserErrors: errors, exercised: [...new Set(calls.map((call) => call.method))], profiles: state.profiles.length, screenshots: output }));
 } finally { await browser.close(); }

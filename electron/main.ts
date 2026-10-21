@@ -27,7 +27,9 @@ let tray: Tray | null = null;
 let service: ProfileService | null = null;
 let store: LocalStore | null = null;
 let exiting = false;
+let quitRequest: Promise<void> | null = null;
 let nativeDialog = false;
+let dialogOwner: BrowserWindow | null = null;
 let initialError: string | null = null;
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 interface PanelAnchor { point: Electron.Point; trayBounds?: Electron.Rectangle }
@@ -49,13 +51,14 @@ function positionPanel(anchor: PanelAnchor, display = screen.getDisplayNearestPo
 }
 
 function showPanel(view?: View, anchor?: PanelAnchor): void {
-  if (view === 'settings') { void showSettings(); return; }
-  if (exiting || !window || window.isDestroyed()) return;
+  if (exiting) return;
+  if (view === 'settings') { runBackground(() => showSettings()); return; }
+  if (!window || window.isDestroyed()) return;
   positionPanel(anchor ?? { point: screen.getCursorScreenPoint(), trayBounds: tray?.getBounds() });
   window.show();
   window.focus();
   if (view) window.webContents.send('switcher:navigate', view);
-  void publishState();
+  runBackground(publishState);
 }
 
 function secureWindow(target: BrowserWindow, url: string): void {
@@ -69,10 +72,11 @@ function secureWindow(target: BrowserWindow, url: string): void {
 }
 
 async function showSettings(profileId?: string): Promise<void> {
+  if (exiting) return;
   if (profileId !== undefined && (typeof profileId !== 'string' || profileId.length > 64)) throw new AppError('INVALID_PROFILE');
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     await settingsReady;
-    if (!settingsWindow || settingsWindow.isDestroyed()) return;
+    if (exiting || !settingsWindow || settingsWindow.isDestroyed()) return;
     settingsWindow.show();
     settingsWindow.focus();
     if (profileId !== undefined) settingsWindow.webContents.send('switcher:edit-profile', profileId || null);
@@ -100,6 +104,7 @@ async function showSettings(profileId?: string): Promise<void> {
   target.on('closed', () => { if (settingsWindow === target) settingsWindow = null; });
   settingsReady = target.loadURL(url.href);
   try { await settingsReady; } finally { settingsReady = null; }
+  if (exiting || target.isDestroyed()) return;
   target.show();
   target.focus();
   await publishState();
@@ -107,24 +112,86 @@ async function showSettings(profileId?: string): Promise<void> {
 
 function zh(): boolean { return store?.settings.language !== 'en'; }
 
-async function requestQuit(confirm = true): Promise<void> {
-  if (exiting || service?.isBusy || nativeDialog) return;
-  if (confirm && bridge.isRunning()) {
-    nativeDialog = true;
-    try {
-      const result = await dialog.showMessageBox({
-        type: 'question', title: 'AgentSwitcher',
-        message: zh() ? '退出后，API 连接将中断' : 'Quitting disconnects the API connection',
-        detail: zh() ? '可以先切回 ChatGPT，或保持 AgentSwitcher 在托盘运行。' : 'Switch back to ChatGPT first, or keep AgentSwitcher running in the tray.',
-        buttons: zh() ? ['留在托盘', '退出'] : ['Keep running', 'Quit'], defaultId: 0, cancelId: 0,
-      });
-      if (result.response !== 1) return;
-    } finally { nativeDialog = false; }
+function runBackground(action: () => Promise<unknown>): void {
+  void action().catch((error) => {
+    // Never expose raw OS/provider errors, which may include credentials.
+    const code = errorCode(error);
+    console.error(`AgentSwitcher: ${code}`);
+    if (window && !window.isDestroyed() && !exiting) { window.show(); window.focus(); }
+    void publishState(code).catch(() => undefined);
+  });
+}
+
+async function showMessage(options: Electron.MessageBoxOptions): Promise<Electron.MessageBoxReturnValue> {
+  if (nativeDialog) throw new AppError('DIALOG_IN_PROGRESS');
+  const owner = BrowserWindow.getFocusedWindow() ??
+    (settingsWindow?.isVisible() ? settingsWindow : window);
+  nativeDialog = true;
+  dialogOwner = owner;
+  try {
+    // A parent keeps the dialog above the floating panel, even with a hidden Dock icon.
+    if (owner && !owner.isDestroyed()) {
+      owner.show(); owner.focus();
+      return await dialog.showMessageBox(owner, options);
+    }
+    return await dialog.showMessageBox(options);
+  } finally { nativeDialog = false; dialogOwner = null; }
+}
+
+function checkQuit(): void {
+  if (nativeDialog) throw new AppError('DIALOG_IN_PROGRESS');
+  if (service?.isBusy) throw new AppError('SWITCH_IN_PROGRESS');
+}
+
+async function quitFromMenu(): Promise<void> {
+  try { await requestQuit(); }
+  catch (error) {
+    if (error instanceof AppError && error.code === 'DIALOG_IN_PROGRESS') {
+      // Focus the existing modal instead of stacking another dialog on top of it.
+      const owner = dialogOwner ?? BrowserWindow.getFocusedWindow() ?? window;
+      owner?.show(); owner?.focus();
+      return;
+    }
+    await showMessage({ type: 'info', title: 'AgentSwitcher',
+      message: error instanceof AppError && error.code === 'SWITCH_IN_PROGRESS'
+        ? (zh() ? '当前操作尚未完成，请稍后退出' : 'Wait for the current operation to finish before quitting')
+        : (zh() ? '退出未完成，请重试' : 'Could not quit. Please try again.'),
+      detail: errorCode(error), buttons: [zh() ? '好' : 'OK'],
+    });
   }
+}
+
+function requestQuit(confirm = true): Promise<void> {
+  if (exiting) return Promise.resolve();
+  if (quitRequest) return quitRequest;
+  try { checkQuit(); } catch (error) { return Promise.reject(error); }
+  quitRequest = prepareQuit(confirm).finally(() => { quitRequest = null; });
+  return quitRequest;
+}
+
+async function prepareQuit(confirm: boolean): Promise<void> {
+  if (confirm && bridge.isRunning()) {
+    const result = await showMessage({
+      type: 'question', title: 'AgentSwitcher',
+      message: zh() ? '退出后，API 连接将中断' : 'Quitting disconnects the API connection',
+      detail: zh() ? '可以先切回 ChatGPT，或保持 AgentSwitcher 在托盘运行。' : 'Switch back to ChatGPT first, or keep AgentSwitcher running in the tray.',
+      buttons: zh() ? ['留在托盘', '退出'] : ['Keep running', 'Quit'], defaultId: 0, cancelId: 0,
+    });
+    if (result.response !== 1) return;
+  }
+  checkQuit();
   exiting = true;
   if (refreshTimer) clearInterval(refreshTimer);
-  await bridge.stop();
-  app.quit();
+  // Return the IPC response before destroying its sender.
+  setImmediate(() => {
+    // Once all transactions are idle, an unresponsive listener must not trap the app.
+    const deadline = setTimeout(() => app.exit(0), 3000);
+    deadline.unref();
+    app.once('will-quit', () => clearTimeout(deadline));
+    void bridge.stop().catch((error) => {
+      console.error(`AgentSwitcher shutdown: ${errorCode(error)}`);
+    }).finally(() => app.quit());
+  });
 }
 
 function updateTray(state: AppState): void {
@@ -136,21 +203,20 @@ function updateTray(state: AppState): void {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: text('打开 AgentSwitcher', 'Open AgentSwitcher'), click: () => showPanel() },
     { type: 'separator' },
-    { label: 'ChatGPT', type: 'radio', checked: state.activeProfile === 'chatgpt', enabled: !service?.isBusy, click: () => void traySwitch('chatgpt') },
+    { label: 'ChatGPT', type: 'radio', checked: state.activeProfile === 'chatgpt', enabled: !service?.isBusy, click: () => runBackground(() => traySwitch('chatgpt')) },
     ...state.profiles.map(profile => ({ label: profile.name.replace(/&/g, '&&'), type: 'radio' as const,
       checked: state.activeProfile === profile.id, enabled: profile.hasApiKey && state.encryptionAvailable && !service?.isBusy,
-      click: () => void traySwitch(profile.id) })),
+      click: () => runBackground(() => traySwitch(profile.id)) })),
     { type: 'separator' },
     { label: text('设置…', 'Settings…'), click: () => showPanel('settings') },
-    { label: text('退出', 'Quit'), enabled: !service?.isBusy, click: () => void requestQuit() },
+    { label: text('退出', 'Quit'), click: () => runBackground(quitFromMenu) },
   ]));
 }
 
 async function traySwitch(profile: string): Promise<void> {
-  if (!service) return;
-  nativeDialog = true;
+  if (!service || exiting || quitRequest) return;
   try {
-    const result = await dialog.showMessageBox({
+    const result = await showMessage({
       type: 'question', title: 'AgentSwitcher',
       message: zh() ? '切换配置并重启 Codex？' : 'Switch profile and restart Codex?',
       detail: zh() ? '若 5 秒内未退出，将强制终止桌面进程。未保存的任务可能丢失，请先保存工作。' : 'If the desktop does not exit within 5 seconds, it will be force stopped. Unsaved work may be lost. Save your work first.',
@@ -160,14 +226,15 @@ async function traySwitch(profile: string): Promise<void> {
     await service.switchProfile(profile);
   } catch (error) {
     showPanel();
-    await dialog.showMessageBox({ type: 'error', title: 'AgentSwitcher', message: zh() ? '切换未完成' : 'Switch failed', detail: errorCode(error) });
-  } finally { nativeDialog = false; await publishState(); }
+    await showMessage({ type: 'error', title: 'AgentSwitcher', message: zh() ? '切换未完成' : 'Switch failed', detail: errorCode(error) });
+  } finally { await publishState(); }
 }
 
-async function publishState(): Promise<void> {
+async function publishState(backgroundError?: string): Promise<void> {
   if (!service || exiting) return;
   const state = await service.getState();
   if (initialError) state.lastError = initialError;
+  else if (!state.lastError && backgroundError) state.lastError = backgroundError;
   broadcastState(state);
   updateTray(state);
 }
@@ -190,6 +257,7 @@ function registerIpc(): void {
     });
   };
   const ready = (): ProfileService => {
+    if (exiting || quitRequest) throw new AppError('APP_QUITTING');
     if (initialError || !service) throw new AppError(initialError ?? 'OPERATION_FAILED');
     return service;
   };
@@ -207,25 +275,29 @@ function registerIpc(): void {
   handle('switcher:restart', () => ready().restartCodex());
   handle('switcher:test', (input) => ready().testConnection(input));
   handle('switcher:choose-app', async () => {
+    if (nativeDialog) throw new AppError('DIALOG_IN_PROGRESS');
     nativeDialog = true;
+    dialogOwner = BrowserWindow.getFocusedWindow() ?? settingsWindow ?? window;
     try {
-      const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? settingsWindow ?? window!, {
+      const result = await dialog.showOpenDialog(dialogOwner!, {
         title: zh() ? '选择 Codex 桌面应用' : 'Choose Codex Desktop',
         properties: ['openFile'],
         filters: [{ name: 'Desktop application', extensions: process.platform === 'darwin' ? ['app'] : ['exe'] }],
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
-    } finally { nativeDialog = false; }
+    } finally { nativeDialog = false; dialogOwner = null; }
   });
   handle('switcher:choose-home', async () => {
+    if (nativeDialog) throw new AppError('DIALOG_IN_PROGRESS');
     nativeDialog = true;
+    dialogOwner = BrowserWindow.getFocusedWindow() ?? settingsWindow ?? window;
     try {
-      const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? settingsWindow ?? window!, {
+      const result = await dialog.showOpenDialog(dialogOwner!, {
         title: zh() ? '选择 Codex 配置目录' : 'Choose Codex configuration folder',
         properties: ['openDirectory', 'createDirectory'],
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
-    } finally { nativeDialog = false; }
+    } finally { nativeDialog = false; dialogOwner = null; }
   });
   handle('switcher:open-config', async () => {
     await mkdir(store!.settings.codexHome, { recursive: true });
@@ -233,7 +305,10 @@ function registerIpc(): void {
   });
   handle('switcher:hide', () => { window?.hide(); });
   // Renderer has its own interruption confirmation; OS menu/quit uses native confirmation.
-  handle('switcher:quit', () => { setImmediate(() => void requestQuit(false)); });
+  handle('switcher:quit', (confirmed = false) => {
+    if (typeof confirmed !== 'boolean') throw new AppError('INVALID_SETTINGS');
+    return requestQuit(!confirmed);
+  });
 }
 
 if (hasLock) app.whenReady().then(async () => {
@@ -294,7 +369,7 @@ if (hasLock) app.whenReady().then(async () => {
   });
   await window.loadURL(rendererUrl);
   await publishState();
-  refreshTimer = setInterval(() => { if ((window?.isVisible() || settingsWindow?.isVisible()) && !service?.isBusy) void publishState(); }, 15000);
+  refreshTimer = setInterval(() => { if ((window?.isVisible() || settingsWindow?.isVisible()) && !service?.isBusy) runBackground(publishState); }, 15000);
 }).catch(() => {
   dialog.showErrorBox('AgentSwitcher', 'STARTUP_FAILED');
   app.exit(1);
@@ -304,5 +379,5 @@ app.on('second-instance', () => showPanel());
 app.on('activate', () => showPanel());
 app.on('window-all-closed', () => { /* Tray owns application lifetime. */ });
 app.on('before-quit', (event) => {
-  if (!exiting) { event.preventDefault(); void requestQuit(); }
+  if (!exiting) { event.preventDefault(); runBackground(quitFromMenu); }
 });

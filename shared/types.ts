@@ -99,7 +99,7 @@ export interface AgentSwitcherApi {
   chooseCodexHome(): Promise<string | null>;
   openConfigFolder(): Promise<void>;
   hideWindow(): Promise<void>;
-  quit(): Promise<void>;
+  quit(confirmed?: boolean): Promise<void>;
   onStateChanged(callback: (state: AppState) => void): () => void;
   onNavigate(callback: (view: View) => void): () => void;
   onEditProfile(callback: (id: string | null) => void): () => void;
