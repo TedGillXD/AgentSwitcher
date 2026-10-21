@@ -1,0 +1,181 @@
+// Real Electron + preload + OS encryption, with isolated user-data/Codex folders.
+// This test never switches profiles, stops Codex, or calls a paid provider API.
+import { _electron as electron, expect } from '@playwright/test';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, join, resolve, sep } from 'node:path';
+
+const directory = await mkdtemp(join(tmpdir(), 'agent-switcher-electron-'));
+const dataDirectory = join(directory, 'user-data');
+const codexHome = join(directory, 'codex');
+await mkdir(codexHome, { recursive: true });
+await mkdir('test-results', { recursive: true });
+const environment = { ...process.env, AGENT_SWITCHER_USER_DATA: dataDirectory, CODEX_HOME: codexHome };
+delete environment.ELECTRON_RUN_AS_NODE;
+let application;
+const executable = process.env.AGENT_SWITCHER_EXECUTABLE;
+const launchOptions = {
+  env: environment, timeout: 45000,
+  ...(executable ? { executablePath: resolve(executable), args: [`--user-data-dir=${dataDirectory}`] } : { args: [resolve('out/main/index.js')] }),
+};
+try {
+  application = await electron.launch(launchOptions);
+  expect(await application.evaluate(({ app }) => app.getPath('userData'))).toBe(dataDirectory);
+  const page = await application.firstWindow({ timeout: 45000 });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await expect(page.getByText('CODEX 配置', { exact: true })).toBeVisible({ timeout: 45000 });
+  const initial = await page.evaluate(() => window.agentSwitcher.getState());
+  expect(initial.settings.codexHome).toBe(codexHome);
+  expect(initial.settings.language).toBe('zh-CN');
+  expect(initial.hasApiKey).toBe(false);
+  expect(initial.encryptionAvailable).toBe(true);
+  expect(initial.settings.hideOnBlur).toBe(false);
+  expect(await page.evaluate(() => typeof require)).toBe('undefined');
+  expect(await page.evaluate(() => typeof process)).toBe('undefined');
+  // Capture this isolated app's tray, then emit clicks without moving the real mouse.
+  const displays = await application.evaluate(({ app, Tray, screen }) => {
+    const getBounds = Tray.prototype.getBounds;
+    Tray.prototype.getBounds = function () {
+      globalThis.__smokeTray = this;
+      return getBounds.call(this);
+    };
+    try { app.emit('second-instance'); } finally { Tray.prototype.getBounds = getBounds; }
+    if (!globalThis.__smokeTray) throw new Error('Test tray was not captured');
+    return screen.getAllDisplays().map(display => ({ id: display.id, workArea: display.workArea }));
+  });
+  await page.evaluate(() => window.agentSwitcher.hideWindow());
+  for (const display of displays) {
+    const probe = await application.evaluate(({ BrowserWindow, screen }, target) => {
+      const panel = BrowserWindow.getAllWindows()[0];
+      const area = target.workArea;
+      const point = { x: area.x + area.width - 22, y: area.y + area.height - 20 };
+      const icon = { x: point.x - 8, y: point.y - 8, width: 16, height: 16 };
+      const cursor = screen.getCursorScreenPoint;
+      screen.getCursorScreenPoint = () => point;
+      const eventPoint = process.platform === 'darwin' ? { x: 8, y: 8 } : point;
+      try {
+        globalThis.__smokeTray.emit('click', {}, icon, eventPoint);
+        const bounds = panel.getBounds();
+        panel.emit('blur');
+        const staysOpen = panel.isVisible();
+        // A saved click point may belong to another screen after a DPI/layout change.
+        const currentDisplay = screen.getAllDisplays().find(display => display.id === target.id);
+        const anotherDisplay = screen.getAllDisplays().find(display => display.id !== target.id);
+        const nearest = screen.getDisplayNearestPoint;
+        if (anotherDisplay) screen.getDisplayNearestPoint = () => anotherDisplay;
+        try { screen.emit('display-metrics-changed', {}, currentDisplay, ['scaleFactor']); }
+        finally { screen.getDisplayNearestPoint = nearest; }
+        const afterMetrics = panel.getBounds();
+        globalThis.__smokeTray.emit('click', {}, icon, eventPoint);
+        const togglesClosed = !panel.isVisible();
+        globalThis.__smokeTray.emit('click', {}, icon, eventPoint);
+        return { bounds, afterMetrics, staysOpen, togglesClosed };
+      } finally { screen.getCursorScreenPoint = cursor; }
+    }, display);
+    const { bounds } = probe;
+    expect(probe.staysOpen).toBe(true);
+    expect(probe.togglesClosed).toBe(true);
+    expect(probe.afterMetrics).toEqual(bounds);
+    expect(bounds.x).toBeGreaterThanOrEqual(display.workArea.x);
+    expect(bounds.y).toBeGreaterThanOrEqual(display.workArea.y);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(display.workArea.x + display.workArea.width);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(display.workArea.y + display.workArea.height);
+    expect(bounds.x + bounds.width).toBeGreaterThanOrEqual(display.workArea.x + display.workArea.width - 60);
+  }
+  const fixtureKey = 'sk-local-smoke-fixture-no-api-requests';
+  const saved = await page.evaluate(async ({ settings, key }) => window.agentSwitcher.saveSettings({ ...settings, apiKey: key, language: 'en', hideOnBlur: false }), { settings: initial.settings, key: fixtureKey });
+  expect(saved.hasApiKey).toBe(true);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  const persisted = await readFile(join(dataDirectory, 'settings.json'), 'utf8');
+  expect(persisted).not.toContain(fixtureKey);
+  expect(JSON.parse(persisted).encryptedSecrets).toBeTruthy();
+  expect(JSON.stringify(saved)).not.toContain(fixtureKey);
+  expect(await page.evaluate(() => localStorage.length)).toBe(0);
+  await page.evaluate(() => Promise.all([window.agentSwitcher.openSettings('deepseek'), window.agentSwitcher.openSettings('general')]));
+  const manager = application.windows().find(candidate => candidate !== page) ?? await application.waitForEvent('window', { predicate: candidate => candidate !== page, timeout: 5000 });
+  expect(manager).toBeTruthy();
+  manager.on('pageerror', (error) => errors.push(error.message));
+  await expect(manager.locator('#codex-home')).toHaveValue(codexHome);
+  await page.evaluate(() => window.agentSwitcher.openSettings('deepseek'));
+  await expect(manager.locator('#base-url')).toHaveValue('https://api.deepseek.com');
+  expect(new URL(manager.url()).searchParams.get('window')).toBe('settings');
+  expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(2);
+  expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(target => !target.webContents.getURL().includes('window=settings')).isVisible())).toBe(true);
+  expect(await manager.evaluate(() => typeof require)).toBe('undefined');
+  expect(await manager.locator('#api-key').inputValue()).toBe('');
+  const secondKey = 'sk-second-profile-smoke-fixture-no-api-requests';
+  const withProfile = await manager.evaluate(async key => window.agentSwitcher.saveProfile({
+    name: 'GLM smoke', preset: 'glm', baseUrl: 'https://provider.example/v1', apiKey: key,
+    protocol: 'chat_completions', modelIds: ['glm-smoke-pro', 'glm-smoke-flash'], defaultModel: 'glm-smoke-pro',
+  }), secondKey);
+  const added = withProfile.profiles.find(profile => profile.name === 'GLM smoke');
+  expect(added.hasApiKey).toBe(true);
+  expect(JSON.stringify(withProfile)).not.toContain(secondKey);
+  await expect(page.getByRole('heading', { name: 'GLM smoke', exact: true })).toBeVisible();
+  await page.evaluate(id => window.agentSwitcher.openSettings(id), added.id);
+  await expect(manager.locator('#base-url')).toHaveValue('https://provider.example/v1');
+  expect(await manager.locator('#api-key').inputValue()).toBe('');
+  await manager.locator('#profile-name').fill('Unsaved native window draft');
+  await manager.evaluate(() => window.agentSwitcher.closeSettings());
+  expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(target => target.webContents.getURL().includes('window=settings')).isVisible())).toBe(false);
+  await page.evaluate(() => window.agentSwitcher.openSettings());
+  await expect(manager.locator('#profile-name')).toHaveValue('Unsaved native window draft');
+  expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(2);
+  await manager.locator('#profile-name').fill('GLM smoke');
+  await manager.screenshot({ path: 'test-results/electron-manager.png' });
+  const multiPersisted = await readFile(join(dataDirectory, 'settings.json'), 'utf8');
+  expect(multiPersisted).not.toContain(secondKey);
+  expect(multiPersisted).not.toContain(fixtureKey);
+  expect(JSON.parse(multiPersisted).version).toBe(2);
+  expect(await manager.evaluate(() => localStorage.length)).toBe(0);
+  await page.screenshot({ path: 'test-results/electron-profiles.png' });
+  await page.evaluate(() => window.agentSwitcher.hideWindow());
+  expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(target => !target.webContents.getURL().includes('window=settings')).isVisible())).toBe(false);
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(target => !target.webContents.getURL().includes('window=settings')).show());
+  // Invalid IPC input is rejected by the main process, before any process/config mutation.
+  const invalid = await page.evaluate(async () => {
+    try { await window.agentSwitcher.switchProfile('invalid'); return ''; }
+    catch (error) { return error.message; }
+  });
+  expect(invalid).toBe('INVALID_PROFILE');
+  expect(errors).toEqual([]);
+  await application.close();
+  application = undefined;
+
+  // An upgrade with the old preference enabled must also keep the panel open.
+  const legacy = JSON.parse(await readFile(join(dataDirectory, 'settings.json'), 'utf8'));
+  legacy.settings.hideOnBlur = true;
+  const legacyText = JSON.stringify(legacy);
+  await writeFile(join(dataDirectory, 'settings.json'), legacyText);
+
+  application = await electron.launch(launchOptions);
+  const reopened = await application.firstWindow({ timeout: 45000 });
+  await expect(reopened.locator('html')).toHaveAttribute('lang', 'en', { timeout: 45000 });
+  const loaded = await reopened.evaluate(() => window.agentSwitcher.getState());
+  expect(loaded.hasApiKey).toBe(true);
+  expect(loaded.settings.codexHome).toBe(codexHome);
+  expect(loaded.settings.hideOnBlur).toBe(false);
+  expect(await readFile(join(dataDirectory, 'settings.json'), 'utf8')).toBe(legacyText);
+  expect(await application.evaluate(({ BrowserWindow }) => {
+    const panel = BrowserWindow.getAllWindows()[0]; panel.emit('blur'); return panel.isVisible();
+  })).toBe(true);
+  const reloadedProfile = loaded.profiles.find(profile => profile.name === 'GLM smoke');
+  expect(reloadedProfile.hasApiKey).toBe(true);
+  expect(reloadedProfile.modelIds).toEqual(['glm-smoke-pro', 'glm-smoke-flash']);
+  const renamed = await reopened.evaluate(id => window.agentSwitcher.saveProfile({
+    id, name: 'GLM renamed', preset: 'glm', baseUrl: 'https://provider.example/v1',
+    protocol: 'chat_completions', modelIds: ['glm-smoke-pro', 'glm-smoke-flash'], defaultModel: 'glm-smoke-pro',
+  }), reloadedProfile.id);
+  expect(renamed.profiles.find(profile => profile.id === reloadedProfile.id).hasApiKey).toBe(true);
+  const deleted = await reopened.evaluate(id => window.agentSwitcher.deleteProfile(id), reloadedProfile.id);
+  expect(deleted.profiles.some(profile => profile.id === reloadedProfile.id)).toBe(false);
+  await reopened.evaluate((settings) => window.agentSwitcher.saveSettings({ ...settings, clearApiKey: true }), loaded.settings);
+  expect((await reopened.evaluate(() => window.agentSwitcher.getState())).hasApiKey).toBe(false);
+  console.log(`Electron smoke passed: tray positioning on ${displays.length} display(s), persistent panel on blur/upgrade, explicit hide, two native windows, draft retention, profile CRUD, encryption and sandbox. No Codex restart/API call.`);
+} finally {
+  await application?.close();
+  const absolute = resolve(directory);
+  if (!absolute.startsWith(`${resolve(tmpdir())}${sep}`) || !basename(absolute).startsWith('agent-switcher-electron-')) throw new Error('Unsafe smoke cleanup path');
+  await rm(absolute, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
+}

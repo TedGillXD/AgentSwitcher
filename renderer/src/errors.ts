@@ -1,0 +1,39 @@
+import type { Language } from '../../shared/types';
+
+const messages: Record<string, [string, string]> = {
+  API_KEY_REQUIRED: ['请先填写 API Key，或使用已保存的密钥。', 'Enter an API key, or use a saved key.'],
+  API_KEY_IN_USE: ['密钥正在使用中，请先切换到其他配置。', 'Switch to another configuration before removing this key.'],
+  API_KEY_REJECTED: ['服务商拒绝了此密钥，请检查密钥及权限。', 'The provider rejected this key. Check its permissions.'],
+  PROFILE_IN_USE: ['此配置正在使用中，请先切换到 ChatGPT 或其他配置，再编辑或删除。', 'Switch to ChatGPT or another configuration before editing or deleting the active one.'],
+  PROFILE_NOT_FOUND: ['未找到此配置，请刷新后重试。', 'This configuration no longer exists. Refresh and try again.'],
+  INVALID_PROFILE: ['配置内容无效，请检查名称、API 地址与模型。', 'Check the configuration name, API URL, and models.'],
+  INVALID_SETTINGS: ['设置内容无效，请检查 API 地址、模型名称和文件路径。', 'Check the API URL, model names, and file paths.'],
+  MODEL_NOT_FOUND: ['服务商的模型目录中没有此模型，请检查模型名称。', 'This model is missing from the provider catalog. Check its name.'],
+  MODEL_DISCOVERY_FAILED: ['无法自动发现模型。请在高级选项中手动填写模型 ID。', 'Models could not be discovered. Enter model IDs in Advanced options.'],
+  MODEL_DISCOVERY_UNAVAILABLE: ['此接口无法列出模型。请在高级选项中手动填写模型 ID。', 'This endpoint cannot list models. Enter model IDs in Advanced options.'],
+  MODELS_REQUIRED: ['请先发现模型，或在高级选项中填写模型 ID。', 'Discover models, or enter model IDs in Advanced options.'],
+  CONNECTION_FAILED: ['连接失败，请检查地址、网络及接口状态。', 'Connection failed. Check the URL, network, and provider status.'],
+  ENCRYPTION_UNAVAILABLE: ['系统加密不可用，请检查系统凭据服务。已有密文会保留。', 'System encryption is unavailable. Check the credential service. Existing encrypted data was kept.'],
+  CODEX_NOT_FOUND: ['未找到 Codex 桌面应用，请在通用设置中选择应用路径。', 'Choose the Codex Desktop application path in General settings.'],
+  APP_STOP_FAILED: ['Codex 未能退出，强制终止可能被系统阻止。请检查权限或手动退出桌面应用后重试。', 'Codex could not exit. Check permissions or quit it manually, then retry.'],
+  APP_START_FAILED: ['Codex 启动失败，请检查通用设置中的应用路径。', 'Codex could not start. Check the application path in General settings.'],
+  CONFIG_INVALID: ['Codex 配置无法解析，请检查 config.toml 后重试。', 'Codex config.toml could not be parsed. Check the file and retry.'],
+  CONFIG_CONFLICT: ['配置发生了变化。请检查外部编辑，解决冲突后重试。', 'The configuration changed. Resolve external edits and retry.'],
+  CONFIG_UNSUPPORTED_FORMAT: ['目标字段使用了不支持的内联 TOML 格式，请改为常规表。', 'Convert the target inline TOML settings to regular tables.'],
+  CONFIG_HOME_ACTIVE: ['API 配置正在使用中，请先切回 ChatGPT，再修改配置目录。', 'Switch to ChatGPT before changing the active Codex home.'],
+  RESTART_REQUIRED: ['请先切换到其他配置，再编辑此 API 连接。', 'Switch to another configuration before editing this connection.'],
+  SWITCH_IN_PROGRESS: ['正在切换配置，请稍候再试。', 'A switch is in progress. Please wait.'],
+  BRIDGE_START_FAILED: ['本地连接未能启动，请检查端口占用后重试。', 'The local connection could not start. Check for a port conflict.'],
+  RECOVERY_REQUIRED: ['上次切换尚未恢复。解决配置冲突后，请重新打开 AgentSwitcher。', 'Resolve the configuration conflict and reopen AgentSwitcher to recover the previous switch.'],
+  ROLLBACK_FAILED: ['恢复信息已保留。请退出 Codex，解决配置或存储问题后重新打开切换器。', 'Recovery data was kept. Quit Codex, resolve storage or config issues, then reopen AgentSwitcher.'],
+  CUSTOM_HOME_STORE_UNSUPPORTED: ['Microsoft Store 安装仅支持默认 Codex 配置目录。', 'Microsoft Store installs require the default Codex home.'],
+  LOGIN_REQUIRES_INSTALL: ['开机启动需要先打包并安装 AgentSwitcher。', 'Install the packaged app to enable launch at login.'],
+  STORAGE_INVALID: ['本地设置文件损坏或版本不支持，原文件已保留。', 'Local settings are invalid or unsupported. The original file was preserved.'],
+  OPERATION_FAILED: ['操作未完成，请检查设置后重试。', 'The operation could not finish. Check your settings and retry.'],
+};
+
+export function friendlyError(error: unknown, language: Language): string {
+  const message = error instanceof Error ? error.message : String(error ?? 'OPERATION_FAILED');
+  const code = Object.keys(messages).find((key) => message === key || message.includes(`'${key}'`) || message.includes(`: ${key}`));
+  return code ? messages[code]![language === 'zh-CN' ? 0 : 1] : message;
+}

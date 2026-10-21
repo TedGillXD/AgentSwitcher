@@ -1,0 +1,13 @@
+node_modules/
+out/
+release/
+build/electron-*.zip
+build/nsis-*.7z
+coverage/
+test-results/
+playwright-report/
+renderer/qa/output/
+.DS_Store
+*.log
+.env*
+!.env.example

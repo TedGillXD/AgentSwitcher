@@ -1,0 +1,49 @@
+{
+  "name": "agent-switcher",
+  "version": "0.2.1",
+  "description": "A local-first Codex profile switcher for Windows and macOS",
+  "author": "AgentSwitcher contributors",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=22.16"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "dev:ui": "vite --host 127.0.0.1 --config vite.preview.config.ts",
+    "build": "pnpm typecheck && electron-vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:electron": "node scripts/smoke-electron.mjs",
+    "test:force-stop": "node scripts/smoke-force-stop.mjs",
+    "icons": "node scripts/generate-icons.mjs",
+    "pack:dir": "pnpm build && electron-builder --dir",
+    "dist:win": "pnpm build && electron-builder --win",
+    "dist:mac": "pnpm build && electron-builder --mac",
+    "start": "electron-vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "smol-toml": "^1.9.1",
+    "toml-eslint-parser": "^1.0.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^6.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}

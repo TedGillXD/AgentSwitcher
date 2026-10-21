@@ -1,0 +1,49 @@
+name: Desktop build
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - if: runner.os == 'Windows'
+        run: pnpm test:force-stop
+      - run: pnpm build
+      - run: pnpm test:electron
+      - if: runner.os == 'Windows'
+        run: pnpm exec electron-builder --win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - if: runner.os == 'macOS'
+        run: pnpm exec electron-builder --mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgentSwitcher-${{ runner.os }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
