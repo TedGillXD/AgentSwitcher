@@ -359,7 +359,13 @@ try {
   await activePage.getByRole('button', { name: 'More actions', exact: true }).click();
   await activePage.getByRole('menuitem', { name: 'Quit Agent Switcher', exact: true }).click();
   await expect(activePage.getByRole('alertdialog')).toBeVisible();
-  await activePage.getByRole('alertdialog').getByRole('button', { name: 'Quit Agent Switcher', exact: true }).click();
+  try {
+    await activePage.getByRole('alertdialog').getByRole('button', { name: 'Quit Agent Switcher', exact: true }).click();
+  } catch (error) {
+    // Windows can terminate before Playwright acknowledges the click. A closed
+    // target is expected only here; the child must still prove a clean exit.
+    if (!error.message.includes('Target page, context or browser has been closed')) throw error;
+  }
   await expect.poll(() => quittingProcess.exitCode, { timeout: 10000 }).toBe(0);
   application = undefined;
   console.log(`Electron smoke passed: tray positioning on ${displays.length} display(s), persistent panel on blur/upgrade, actual close buttons, two native windows, draft retention, profile CRUD, encryption, sandbox, busy quit feedback, owned native dialogs, retry after dialog failure and actual process exit. No Codex restart/API call.`);
