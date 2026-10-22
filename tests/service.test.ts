@@ -10,7 +10,7 @@ import { apiConfig, catalogFile, chatgptConfig, configHash, deepseekConfig, mana
 import { PROVIDER_PRESETS } from '../shared/provider-presets';
 import type { ApiProfile, SaveProfileInput } from '../shared/types';
 import { AppError } from '../electron/errors';
-import type { CodexInstallation, StopOptions } from '../electron/platform/codex-process';
+import type { CodexInstallation, LaunchOptions, StopOptions } from '../electron/platform/codex-process';
 import type { BridgeOptions } from '../electron/bridge';
 
 const API_KEY = 'sk-service-fixture-secret';
@@ -43,7 +43,7 @@ const codec: SecretCodec = {
   decryptString: (value) => Buffer.from(Buffer.from(value).map((byte) => byte ^ 0xa5)).toString('utf8'),
 };
 
-async function fixture(original: string | null = ORIGINAL, secrets: SecretData = { apiKey: API_KEY }) {
+async function fixture(original: string | null = ORIGINAL, secrets: SecretData = { apiKey: API_KEY }, platform = 'win32') {
   const directory = await mkdtemp(join(tmpdir(), 'agent-switcher-service-'));
   directories.push(directory);
   const codexHome = join(directory, 'codex');
@@ -60,7 +60,7 @@ async function fixture(original: string | null = ORIGINAL, secrets: SecretData =
     detect: vi.fn(async (_preferred?: string) => installation as CodexInstallation | null),
     isRunning: vi.fn(async (_installation: CodexInstallation) => running),
     stop: vi.fn(async (_installation: CodexInstallation, _options?: StopOptions) => { running = false; }),
-    launch: vi.fn(async (_installation: CodexInstallation, _environment?: NodeJS.ProcessEnv) => { running = true; }),
+    launch: vi.fn(async (_installation: CodexInstallation, _environment?: NodeJS.ProcessEnv, _options?: LaunchOptions) => { running = true; }),
   };
   let bridgeRunning = false;
   const bridge = {
@@ -70,7 +70,7 @@ async function fixture(original: string | null = ORIGINAL, secrets: SecretData =
   };
   const onChange = vi.fn();
   const onLoginPreference = vi.fn();
-  const service = new ProfileService({ store, processes, bridge, version: 'test', platform: 'win32', onChange, onLoginPreference });
+  const service = new ProfileService({ store, processes, bridge, version: 'test', platform, onChange, onLoginPreference });
   return { directory, configPath, storePath, store, settings, installation, processes, bridge, service, onChange, onLoginPreference };
 }
 
@@ -108,6 +108,37 @@ afterEach(async () => {
 });
 
 describe('ProfileService transactions', () => {
+  it('opens a fresh macOS chat on provider changes in both directions', async () => {
+    const f = await fixture(ORIGINAL, { apiKey: API_KEY }, 'darwin');
+    const other = await createProfile(f);
+    await f.service.switchProfile('deepseek');
+    await f.service.switchProfile(other.id);
+    await f.service.switchProfile('chatgpt');
+    expect(f.processes.launch.mock.calls.map((call) => call[2])).toEqual([
+      { newThread: true }, { newThread: true }, { newThread: true },
+    ]);
+    expect(parse(await readConfig(f.configPath)).model_provider).toBe('openai');
+  });
+
+  it('preserves the current macOS chat on an ordinary restart or reapplying the same profile', async () => {
+    const f = await fixture(ORIGINAL, { apiKey: API_KEY }, 'darwin');
+    await f.service.switchProfile('deepseek');
+    f.processes.launch.mockClear();
+    await f.service.restartCodex();
+    await f.service.switchProfile('deepseek');
+    expect(f.processes.launch).toHaveBeenCalledTimes(2);
+    expect(f.processes.launch.mock.calls.every((call) => call.length === 2)).toBe(true);
+  });
+
+  it('reopens the previous macOS chat when a provider switch is rolled back', async () => {
+    const f = await fixture(ORIGINAL, { apiKey: API_KEY }, 'darwin');
+    f.processes.launch.mockRejectedValueOnce(new Error('Launch failed'));
+    await expect(f.service.switchProfile('deepseek')).rejects.toThrow('APP_START_FAILED');
+    expect(f.processes.launch.mock.calls.map((call) => call[2])).toEqual([{ newThread: true }, undefined]);
+    expect(await readConfig(f.configPath)).toBe(ORIGINAL);
+    expect(f.store.getSecrets()).toEqual({ apiKey: API_KEY });
+  });
+
   it('switches ChatGPT → DeepSeek → ChatGPT and preserves unrelated configuration and auth files', async () => {
     const f = await fixture();
     const authPath = join(f.settings.codexHome, 'auth.json');

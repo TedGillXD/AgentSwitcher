@@ -148,6 +148,7 @@ try {
   await panel.reload();
   await expect(panel.getByText('浏览器预览', { exact: true })).toHaveCount(0);
   await expect(panel.locator('.profile-card')).toHaveCount(4);
+  await expect(panel.locator('.switch-explainer')).toContainText('请在新聊天中使用目标配置；已有聊天保留原服务商。');
   await panel.screenshot({ path: path.join(output, 'profiles-zh.png') });
   await panel.getByRole('button', { name: '管理配置', exact: true }).click();
   await expect.poll(() => Boolean(manager)).toBe(true);
@@ -234,19 +235,28 @@ try {
 
   // Switch confirmations, localized failures, and active-profile edit locks.
   const deepseekCard = panel.locator('.profile-card').filter({ has: panel.getByRole('heading', { name: 'DeepSeek', exact: true }) });
+  await expect(panel.locator('.switch-explainer')).toContainText('Use the selected configuration in a new chat');
   failSwitch = true;
   await deepseekCard.getByRole('button', { name: 'Switch', exact: true }).click();
+  await expect(panel.getByRole('alertdialog')).toContainText('Use DeepSeek in a new chat. Switching providers does not migrate existing chats; switch back to continue them.');
+  await expect(panel.getByRole('alertdialog')).toContainText('Keep Agent Switcher running.');
   await panel.getByRole('button', { name: 'Switch & restart', exact: true }).click();
   await expect(panel.getByRole('alert')).toContainText('Codex could not exit');
   await deepseekCard.getByRole('button', { name: 'Switch', exact: true }).click();
   await panel.getByRole('button', { name: 'Switch & restart', exact: true }).click();
   await expect(panel.getByText('Local connection active', { exact: true })).toBeVisible();
+  await expect(panel.getByRole('status')).toHaveText('Switched to DeepSeek. Start a new chat to use it; existing chats keep their original provider.');
+  await noOverflow(panel);
   await panel.getByRole('button', { name: 'Edit DeepSeek', exact: true }).click();
   await expect(manager.getByText(/This configuration is in use/)).toBeVisible();
   await expect(manager.getByLabel('API base URL', { exact: true })).toBeDisabled();
   await expect(manager.getByRole('button', { name: 'Delete configuration', exact: true })).toBeDisabled();
+  state = { ...state, platform: 'darwin' }; await broadcast();
   await manager.getByRole('button', { name: 'Switch to ChatGPT', exact: true }).click();
+  await expect(manager.getByRole('alertdialog')).toContainText('Use ChatGPT in a new chat with your existing sign-in.');
   await manager.getByRole('button', { name: 'Switch & restart', exact: true }).click();
+  await expect(manager.getByRole('status')).toHaveText('Switched to ChatGPT and opened a new chat. Existing chats keep their original provider.');
+  state = { ...state, platform: 'win32' }; await broadcast();
   await expect(manager.getByLabel('API base URL', { exact: true })).toBeEnabled();
   await manager.getByLabel('Configuration name', { exact: false }).fill('Retained draft');
   await manager.getByRole('button', { name: 'Close settings', exact: true }).click();

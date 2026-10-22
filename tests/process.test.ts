@@ -379,7 +379,9 @@ describe('Codex desktop process adapter', () => {
       if (file === '/usr/bin/open') running = true
       return result(file === '/bin/ps' && running ? '100 /Applications/Codex.app/Contents/MacOS/Codex' : '')
     })
-    const adapter = new CodexProcess({ platform: 'darwin', run, sleep: async () => {} })
+    const adapter = new CodexProcess({
+      platform: 'darwin', run, sleep: async () => {}, env: { CODEX_HOME: '' },
+    })
     await adapter.stop(macDesktop)
     await adapter.launch(macDesktop)
     expect(run).toHaveBeenCalledWith('/bin/kill', ['-TERM', '100'], expect.any(Object))
@@ -411,6 +413,20 @@ describe('Codex desktop process adapter', () => {
     expect(run).toHaveBeenCalledWith('/usr/bin/open', [
       '-a', '/Applications/Codex.app', '--env', 'CODEX_HOME=/Users/test/Custom Codex',
     ], expect.any(Object))
+  })
+
+  it.each(['Codex', 'ChatGPT'])('opens a fresh chat in the selected macOS %s bundle after a provider change', async (name) => {
+    const installation = {
+      ...macDesktop, path: `/Applications/${name}.app`,
+      executablePath: `/Applications/${name}.app/Contents/MacOS/${name}`,
+    }
+    const run = vi.fn<CommandRunner>().mockResolvedValue(result(`100 ${installation.executablePath}`))
+    const adapter = new CodexProcess({ platform: 'darwin', run, env: { CODEX_HOME: '' } })
+    await adapter.launch(installation, { CODEX_HOME: '/Users/test/Custom Codex' }, { newThread: true })
+    // Inspect only the command arguments: assertion failures must not dump the host environment.
+    expect(run.mock.calls.find(([file]) => file === '/usr/bin/open')?.[1]).toEqual([
+      '-a', installation.path, '--env', 'CODEX_HOME=/Users/test/Custom Codex', 'codex://threads/new?mode=codex',
+    ])
   })
 
   it('returns null on unsupported platforms and never executes a command', async () => {

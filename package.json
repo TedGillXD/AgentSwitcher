@@ -1,6 +1,6 @@
 {
   "name": "agent-switcher",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "A local-first Codex profile switcher for Windows and macOS",
   "author": "AgentSwitcher contributors",
   "license": "MIT",

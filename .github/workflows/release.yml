@@ -204,21 +204,17 @@ jobs:
           cat > release-notes.md <<'NOTES'
           Windows 和 macOS 安装包 / Windows and macOS installers.
 
-          修复“浏览器能下载，应用内更新却连接失败”：更新检查和下载现在跟随系统代理，兼容系统 PAC 配置，并保留 GitHub 下载重定向检查、流式下载与 SHA-256 校验。0.2.4 / 0.2.5 如无法下载更新，请先通过浏览器下载本版安装包并手动安装一次。
+          修复 macOS 切换到 DeepSeek 等 API 配置后，旧聊天出现“模型不支持 ChatGPT 账号”的问题。已有聊天仍可能沿用原服务商连接，与切换后的全局模型不匹配。现在实际切换配置后会自动打开 Codex 模式的新聊天，让新配置生效；普通重启、同配置重应用和失败回滚保留原行为。
 
-          Fixes update downloads failing while browser downloads work. Update requests now use the system proxy and PAC settings while retaining redirect validation, streaming, and SHA-256 verification. If v0.2.4 or v0.2.5 cannot download updates, install this release once using your browser.
+          Fixes the ChatGPT-account model error after switching to DeepSeek or another API profile on macOS. Existing chats can retain their original provider while the global model changes. Profile changes now open a fresh chat explicitly in Codex mode. Ordinary restarts, reapplying the same profile, and failed-switch rollbacks preserve their previous behavior.
+
+          切换提示与说明已更新：已有聊天保留原服务商，需要继续时请切回原配置；Windows 请在切换后手动新建聊天。API 模式下请保持 AgentSwitcher 运行。登录凭证和聊天历史保持不变。
+
+          Updated bilingual guidance explains how to continue existing chats with their original profile. On Windows, start a new chat after switching. Keep AgentSwitcher running for API profiles. Login credentials and chat history are preserved.
 
           - Windows x64: Intel / AMD PC；Windows arm64: ARM PC。
           - macOS x64: Intel Mac；macOS arm64: Apple Silicon (M1 及更新)。
           - macOS 使用 DMG 安装，也提供 ZIP；SHA256SUMS.txt 可校验下载文件。
-
-          修复第三方配置的模型与推理强度记忆：DeepSeek、GLM、Kimi 等配置分别保留在 Codex 中最后选择的参数，切回 GPT 订阅再返回或重启 AgentSwitcher 后仍能恢复。切换失败会回滚配置与记忆。
-
-          Fixes model and reasoning-effort preferences for third-party profiles. Each profile remembers its last Codex selection across ChatGPT round trips and AgentSwitcher restarts. Failed switches roll back both the configuration and saved preferences.
-
-          新增应用内更新：在“通用设置 → 应用更新”检查本仓库的最新正式版，下载对应系统和架构的安装包，校验 SHA-256 后安装并重启。更新保留已保存的配置与密钥；安装前请先保存草稿，API 连接会在重启时短暂中断。macOS 使用退出后替换与旧版备份，Windows 使用原位升级安装程序。
-
-          Adds in-app updates in General settings: check this repository for the latest stable release, download the matching platform and architecture, verify SHA-256, then install and restart. Saved configurations and keys are preserved. Save unsaved changes first; API connections pause during restart. macOS replaces the app after exit with a backup; Windows runs the in-place upgrade installer.
 
           当前社区构建没有 Windows 代码签名或 Apple Developer ID / 公证。macOS 包采用 ad-hoc 签名。系统可能要求通过“系统设置 → 隐私与安全性 → 仍要打开”确认后运行。
 

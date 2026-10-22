@@ -62,7 +62,7 @@ pnpm dist:mac             # macOS Intel + Apple Silicon DMG / ZIP
 2. 点击“管理配置”打开独立窗口，选择“新增配置”。可选择 GLM、Kimi、DeepSeek 模板，或直接填写自定义 API 地址和 API Key；名称可选，保存时会查询地址下的 `/models`。不同账号、不同地址可分别保存为多套配置。
 3. 如需核对模型，点击“测试并发现模型”；在“高级选项”选择默认模型或手动填写模型列表。服务商不提供模型列表时，官方模板可使用内置模型；自定义地址需要手动填写模型 ID。地址可填写 API 根路径，末尾的 `/responses`、`/chat/completions`、`/models` 会自动去除。
 4. 自动识别传统 Codex 和新版使用 `ChatGPT.exe` / `ChatGPT.app` 的桌面应用；如未检测到，请在配置管理窗口的“通用设置”选择对应应用。
-5. 在主面板选择配置并确认重启。先尝试正常退出，5 秒内未退出时强制终止桌面进程；运行中的任务会中断，未保存工作可能丢失，请先保存工作。切回 ChatGPT 会复用现有登录；尚未登录时由 Codex 自己完成登录。
+5. 在主面板选择配置并确认重启。先尝试正常退出，5 秒内未退出时强制终止桌面进程；运行中的任务会中断，未保存工作可能丢失，请先保存工作。切换后请在新聊天中使用目标配置：macOS 会自动打开新聊天，其他平台请手动新建。已有聊天保留原服务商，需要继续时请切回原配置。切回 ChatGPT 会复用现有登录；尚未登录时由 Codex 自己完成登录。
 
 默认使用 `$CODEX_HOME`，否则使用 `~/.codex`。全局配置也会影响共用此目录的 CLI / IDE。程序不会修改 `auth.json`，也不会读取或重写操作系统中的 Codex 登录凭证。切换到 ChatGPT 会设置 `forced_login_method = "chatgpt"`，避免静默使用 OpenAI API 计费。
 
@@ -75,6 +75,12 @@ API 模式下需要保持 AgentSwitcher 驻留。主动退出会提示连接中�
 0.2.1 起不再失焦收起主面板，旧版启用过此选项的设置也会自动按新行为处理，已有配置和加密密钥保持不变。屏幕分辨率或缩放变化时只调整面板位置，不会抢回其他应用的焦点。
 
 升级到 0.2.0 后，原有 DeepSeek 配置和加密密钥会迁移保留，无需重新输入。每套配置拥有独立的模型目录；在 Codex 内可选择该配置启用的模型，代理按每次请求的模型转发。原有 DeepSeek 的 Flash 和 Pro 会继续同时显示。如果你指定了其他模型目录文件，应用会保留该文件。
+
+## 切换后旧聊天仍报 ChatGPT 模型不支持
+
+如果切换到 DeepSeek 后，已有聊天出现 `The 'deepseek-flash' model is not supported when using Codex with a ChatGPT account.`，原因通常是 Codex 为每个聊天保存了 `model_provider`。原先通过 ChatGPT 创建的聊天仍使用 `openai` 连接，而切换后的全局默认模型已变为 `deepseek-flash`，两者不匹配。重启应用不会迁移该聊天的服务商连接。
+
+请在新聊天中使用目标配置。0.2.7 起，macOS 在实际切换配置后自动打开 Codex 模式的新聊天；Windows 等其他平台请手动新建，普通重启不会打开新聊天。如需继续旧聊天，请切回创建它时的原配置。API 模式下保持 AgentSwitcher 驻留。不需要删除 `auth.json`、退出账号或修改聊天历史；AgentSwitcher 也不会执行这些操作。
 
 ## 实现与验证边界
 
@@ -108,5 +114,7 @@ scripts/               图标生成、真实 Electron 烟测
 AgentSwitcher is a local desktop tray utility for Windows and macOS. Switch Codex between ChatGPT sign-in and multiple API configurations, then restart Codex. A separate configuration window manages DeepSeek, GLM, Kimi and custom providers, each with its own URL, encrypted key and model list. It includes Chinese and English UI, model discovery, conflict detection, atomic updates, rollback and crash recovery.
 
 Run `pnpm install && pnpm dev`. Build with `pnpm build`, run tests with `pnpm test`, and package on the target OS using `pnpm dist:win` or `pnpm dist:mac`. Output goes to `release/`. Keep AgentSwitcher running while an API profile is active; switch away before editing it. Existing ChatGPT credentials are reused without editing the native credential cache. Finish running Codex tasks before switching.
+
+Use a new chat after switching providers. On macOS, changing configurations automatically opens a new chat; on other platforms, create one manually. A normal restart does not open a new chat. Existing chats retain their saved `model_provider`, so a ChatGPT chat can still use `openai` after the global model changes to DeepSeek. This mismatch causes errors such as `The 'deepseek-flash' model is not supported when using Codex with a ChatGPT account.` Switch back to the original configuration to continue an earlier chat. There is no need to delete `auth.json`, sign out, or edit chat history; AgentSwitcher leaves them intact.
 
 The loopback proxy forwards native Responses API requests or adapts them to OpenAI-compatible Chat Completions. Automatic model discovery uses `/models`; custom services without discovery require manual model IDs. Your actual key is never written to Codex configuration or renderer storage. There is no AgentSwitcher cloud service. Platform login, real provider inference and signed distribution require acceptance testing on each target OS.

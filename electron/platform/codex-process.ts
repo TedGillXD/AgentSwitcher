@@ -24,6 +24,11 @@ export interface StopOptions {
   force?: boolean
 }
 
+export interface LaunchOptions {
+  /** Open a fresh chat on macOS so a restored thread cannot override the new provider. */
+  newThread?: boolean
+}
+
 export type CommandRunner = (
   file: string,
   args: string[],
@@ -291,7 +296,7 @@ export class CodexProcess {
     }
   }
 
-  async launch(installation: CodexInstallation, env?: NodeJS.ProcessEnv): Promise<void> {
+  async launch(installation: CodexInstallation, env?: NodeJS.ProcessEnv, options: LaunchOptions = {}): Promise<void> {
     this.assertSupported(installation)
     const launchEnv = env ? { ...env } : { ...this.env }
     // AgentSwitcher can itself have been started by a Node tooling host. Passing
@@ -303,6 +308,10 @@ export class CodexProcess {
         // LaunchServices does not reliably inherit a shell environment. This
         // non-secret path is explicitly supplied to the new app instance.
         if (launchEnv.CODEX_HOME) args.push('--env', `CODEX_HOME=${launchEnv.CODEX_HOME}`)
+        // Existing desktop chats resume with their saved modelProvider. Changing
+        // config.toml alone can pair a new API model with the old ChatGPT provider.
+        // Unified ChatGPT.app also has Chat/Work modes; explicitly select Codex.
+        if (options.newThread) args.push('codex://threads/new?mode=codex')
         await this.run('/usr/bin/open', args, { env: launchEnv })
       } else if (installation.kind === 'store') {
         if (!installation.aumid || !/^[\w.-]+![\w.-]+$/.test(installation.aumid)) {

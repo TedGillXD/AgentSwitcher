@@ -293,7 +293,7 @@ export class ProfileService {
         await atomicWrite(path, next);
         written = next;
         launchAttempted = true;
-        await this.launchApp(installation);
+        await this.launchApp(installation, this.platform === 'darwin' && previousId !== id);
         delete nextSecrets.pending;
         await store.update(settings, nextSecrets, new Date().toISOString());
         if (!target && bridge.isRunning()) await bridge.stop();
@@ -401,8 +401,12 @@ export class ProfileService {
   private async stopApp(installation: CodexInstallation, force = false): Promise<void> {
     try { await this.options.processes.stop(installation, { force }); } catch { throw new AppError('APP_STOP_FAILED'); }
   }
-  private async launchApp(installation: CodexInstallation): Promise<void> {
-    try { await this.options.processes.launch(installation, this.launchEnvironment()); } catch { throw new AppError('APP_START_FAILED'); }
+  private async launchApp(installation: CodexInstallation, newThread = false): Promise<void> {
+    try {
+      const env = this.launchEnvironment();
+      if (newThread) await this.options.processes.launch(installation, env, { newThread: true });
+      else await this.options.processes.launch(installation, env);
+    } catch { throw new AppError('APP_START_FAILED'); }
   }
   private async restoreFile(path: string, original: string | null): Promise<void> {
     if (original !== null) await atomicWrite(path, original);

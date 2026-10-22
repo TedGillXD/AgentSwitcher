@@ -262,7 +262,7 @@ async function traySwitch(profile: string): Promise<void> {
     const result = await showMessage({
       type: 'question', title: 'AgentSwitcher',
       message: zh() ? '切换配置并重启 Codex？' : 'Switch profile and restart Codex?',
-      detail: zh() ? '若 5 秒内未退出，将强制终止桌面进程。未保存的任务可能丢失，请先保存工作。' : 'If the desktop does not exit within 5 seconds, it will be force stopped. Unsaved work may be lost. Save your work first.',
+      detail: zh() ? '若 5 秒内未退出，将强制终止桌面进程，请先保存工作。切换后请在新聊天中使用目标配置；已有聊天保留原服务商，继续时请切回原配置。' : 'If the desktop does not exit within 5 seconds, it will be force stopped. Save your work first. Use a new chat after switching; existing chats keep their original provider. Switch back to continue them.',
       buttons: zh() ? ['取消', '切换并重启'] : ['Cancel', 'Switch & restart'], defaultId: 0, cancelId: 0,
     });
     if (result.response !== 1) return;

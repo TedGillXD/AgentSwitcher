@@ -121,7 +121,7 @@ function App() {
     if (action.kind === 'discard') { action.next(); return; }
     if (action.kind === 'switch') await run(`switch:${action.id}`, async () => {
       const result = await api!.switchProfile(action.id);
-      applyState(result.state); report({ kind: 'success', text: t('switched', { name: action.name }) });
+      applyState(result.state); report({ kind: 'success', text: t(result.state.platform === 'darwin' ? 'switchedMac' : 'switched', { name: action.name }) });
     });
     if (action.kind === 'restart') await run('restart', async () => { applyState(await api!.restartCodex()); report({ kind: 'success', text: t('restarted') }); });
     if (action.kind === 'quit') await runWindowAction(() => api!.quit(true));
