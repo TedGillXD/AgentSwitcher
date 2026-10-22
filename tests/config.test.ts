@@ -3,7 +3,7 @@ import { parse } from 'smol-toml';
 import { resolve } from 'node:path';
 import {
   PROVIDER, activeProfile, apiConfig, catalogFile, chatgptConfig, configHash, deepseekConfig,
-  managedEndpoint, patchValues, snapshotConfig, usesManagedCatalog,
+  managedEndpoint, patchValues, snapshotConfig, snapshotModelSelection, usesManagedCatalog,
 } from '../electron/config';
 import type { ApiProfileConfig } from '../shared/types';
 
@@ -140,6 +140,28 @@ const glm: ApiProfileConfig = {
 };
 
 describe('generic API profile configuration', () => {
+  it('restores a literal TOML model selection without reusing the previous bridge endpoint', () => {
+    const profile = { ...glm, modelIds: ['glm-fixture', 'glm-pro'] };
+    const selected = snapshotModelSelection("\uFEFFmodel = 'glm-pro'\nmodel_reasoning_effort = 'max'\n", home);
+    const data = parse(apiConfig('', home, 23456, token, profile, selected));
+    expect(data.model).toBe('glm-pro');
+    expect(data.model_reasoning_effort).toBe('max');
+    expect(managedEndpoint(apiConfig('', home, 34567, 'fresh-local-token', profile, selected))).toEqual({
+      port: 34567, token: 'fresh-local-token', model: 'glm-pro',
+    });
+  });
+
+  it('keeps selections scoped to the Codex home they came from', () => {
+    const selected = snapshotModelSelection('model = "deepseek-v4-pro"\nmodel_reasoning_effort = "max"\n', home);
+    const profile: ApiProfileConfig = {
+      id: 'deepseek', name: 'DeepSeek', preset: 'deepseek', baseUrl: 'https://api.deepseek.com',
+      protocol: 'responses', modelIds: ['deepseek-flash', 'deepseek-v4-pro'], defaultModel: 'deepseek-flash',
+    };
+    const data = parse(apiConfig('', resolve(home, 'other-home'), 23456, token, profile, selected));
+    expect(data.model).toBe('deepseek-flash');
+    expect(data.model_reasoning_effort).toBe('high');
+  });
+
   it('uses a distinct provider and catalog for each API profile while retaining unrelated settings', () => {
     const source = '# keep\napproval_policy = "on-request"\n[mcp_servers.fixture]\ncommand = "fixture"\n';
     const written = apiConfig(source, home, 23456, token, glm);

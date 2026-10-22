@@ -5,7 +5,7 @@ import { parseTOML, type AST } from 'toml-eslint-parser';
 import type { ApiProfileConfig, ProfileId } from '../shared/types';
 import { availableDeepseekModels } from '../shared/models';
 import { AppError } from './errors';
-import type { ConfigSnapshot } from './store';
+import type { ConfigSnapshot, ModelSelection } from './store';
 
 export const PROVIDER = 'agent_switcher_deepseek';
 const PROVIDER_PREFIX = 'agent_switcher_';
@@ -131,6 +131,15 @@ export function snapshotConfig(text: string, home: string): ConfigSnapshot {
   return { home: resolve(home), values };
 }
 
+export function snapshotModelSelection(text: string, home: string): ModelSelection {
+  const { data } = document(text);
+  return {
+    home: resolve(home),
+    model: typeof data.model === 'string' ? data.model : null,
+    reasoningEffort: typeof data.model_reasoning_effort === 'string' ? data.model_reasoning_effort : null,
+  };
+}
+
 export function chatgptConfig(text: string, snapshot?: ConfigSnapshot): string {
   const changes = snapshot ? { ...snapshot.values } : Object.fromEntries(MANAGED_KEYS.map((key) => [key, null]));
   // A pre-existing third-party provider/profile is preserved in the encrypted snapshot,
@@ -156,18 +165,23 @@ export function deepseekConfig(text: string, home: string, port: number, token: 
   });
 }
 
-export function apiConfig(text: string, home: string, port: number, token: string, profile: ApiProfileConfig): string {
+export function apiConfig(text: string, home: string, port: number, token: string, profile: ApiProfileConfig, selection?: ModelSelection): string {
   if (!profileIdValid(profile.id)) throw new AppError('INVALID_PROFILE');
   const providerId = `${PROVIDER_PREFIX}${profile.id}`;
   const provider = `model_providers.${providerId}`;
+  // A removed model (or a different Codex home) must not revive stale choices.
+  const saved = selection?.home === resolve(home) &&
+    (selection.model === null || profile.modelIds.includes(selection.model)) ? selection : undefined;
   return patchValues(text, {
-    model: JSON.stringify(profile.defaultModel), model_provider: JSON.stringify(providerId), profile: null,
+    model: JSON.stringify(saved?.model ?? profile.defaultModel), model_provider: JSON.stringify(providerId), profile: null,
     preferred_auth_method: '"apikey"',
     // Custom provider auth is supplied by the local proxy. Do not force an API login,
     // which could log out the user's existing ChatGPT credential cache.
     forced_login_method: null,
     model_catalog_json: JSON.stringify(catalogFile(home, profile.id)),
-    model_reasoning_effort: profile.preset === 'deepseek' ? '"high"' : null, model_reasoning_summary: '"none"',
+    model_reasoning_effort: saved ? (saved.reasoningEffort === null ? null : JSON.stringify(saved.reasoningEffort)) :
+      profile.preset === 'deepseek' ? '"high"' : null,
+    model_reasoning_summary: '"none"',
     model_context_window: null, model_auto_compact_token_limit: null,
     web_search: '"disabled"', service_tier: null,
     [DESKTOP_EFFORTS]: '["low", "medium", "high", "xhigh", "ultra", "max"]',

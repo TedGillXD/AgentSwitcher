@@ -6,7 +6,7 @@ import { parse } from 'smol-toml';
 import { ProfileService } from '../electron/service';
 import { LocalStore, defaultSettings, type SecretCodec, type SecretData } from '../electron/store';
 import { atomicWrite, readOptional } from '../electron/files';
-import { apiConfig, catalogFile, chatgptConfig, configHash, deepseekConfig, managedEndpoint, PROVIDER, snapshotConfig } from '../electron/config';
+import { apiConfig, catalogFile, chatgptConfig, configHash, deepseekConfig, managedEndpoint, patchValues, PROVIDER, snapshotConfig } from '../electron/config';
 import { PROVIDER_PRESETS } from '../shared/provider-presets';
 import type { ApiProfile, SaveProfileInput } from '../shared/types';
 import { AppError } from '../electron/errors';
@@ -75,6 +75,12 @@ async function fixture(original: string | null = ORIGINAL, secrets: SecretData =
 }
 
 function readConfig(path: string): Promise<string> { return readFile(path, 'utf8'); }
+
+async function selectModel(f: Awaited<ReturnType<typeof fixture>>, model: string, effort: string | null): Promise<void> {
+  await writeFile(f.configPath, patchValues(await readConfig(f.configPath), {
+    model: JSON.stringify(model), model_reasoning_effort: effort === null ? null : JSON.stringify(effort),
+  }));
+}
 
 async function createProfile(f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<SaveProfileInput> = {}): Promise<ApiProfile> {
   const previousIds = new Set(f.store.profiles.map((profile) => profile.id));
@@ -1093,5 +1099,123 @@ describe('ProfileService switching between API configurations', () => {
     expect((await f.service.getState()).lastError).toBeNull();
     expect(f.processes.stop).toHaveBeenCalledExactlyOnceWith(f.installation, { force: false });
     expect(f.processes.launch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ProfileService remembers each API model selection', () => {
+  it('restores the last DeepSeek model and effort after a ChatGPT round trip and app restart', async () => {
+    const f = await fixture();
+    await f.service.switchProfile('deepseek');
+    await selectModel(f, 'deepseek-v4-pro', 'max');
+    await f.service.switchProfile('chatgpt');
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: 'gpt-fixture', model_reasoning_effort: 'medium' });
+    await selectModel(f, 'gpt-other-fixture', 'high');
+
+    const reloadedStore = new LocalStore(f.storePath, codec, f.settings);
+    await reloadedStore.load();
+    const reloadedService = new ProfileService({ store: reloadedStore, processes: f.processes, bridge: f.bridge, version: 'test' });
+    await reloadedService.initialize();
+    await reloadedService.switchProfile('deepseek');
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: 'deepseek-v4-pro', model_reasoning_effort: 'max' });
+    await reloadedService.switchProfile('chatgpt');
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: 'gpt-other-fixture', model_reasoning_effort: 'high' });
+    expect(reloadedStore.getSecrets().pending).toBeUndefined();
+  });
+
+  it('isolates multiple API selections and preserves a selection when switching to the same profile', async () => {
+    const f = await fixture();
+    const first = await createProfile(f);
+    const second = await createProfile(f, { name: 'Second API', modelIds: ['second-fast', 'second-pro'], defaultModel: 'second-fast' });
+    await f.service.switchProfile(first.id);
+    await selectModel(f, 'example-fast', 'low');
+    await f.service.switchProfile(second.id);
+    await selectModel(f, 'second-pro', 'high');
+    await f.service.switchProfile(first.id);
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: 'example-fast', model_reasoning_effort: 'low' });
+    await selectModel(f, 'example-pro', 'medium');
+    await f.service.switchProfile(first.id);
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: 'example-pro', model_reasoning_effort: 'medium' });
+    await f.service.switchProfile('chatgpt');
+    await f.service.switchProfile(second.id);
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: 'second-pro', model_reasoning_effort: 'high' });
+  });
+
+  it('keeps an explicitly absent reasoning effort instead of restoring the DeepSeek default', async () => {
+    const f = await fixture();
+    await f.service.switchProfile('deepseek');
+    await selectModel(f, 'deepseek-v4-pro', null);
+    await f.service.switchProfile('chatgpt');
+    await f.service.switchProfile('deepseek');
+    const config = parse(await readConfig(f.configPath));
+    expect(config.model).toBe('deepseek-v4-pro');
+    expect(config.model_reasoning_effort).toBeUndefined();
+  });
+
+  it('retains a remembered selection when only the profile name and key are edited', async () => {
+    const f = await fixture();
+    const profile = await createProfile(f);
+    await f.service.switchProfile(profile.id);
+    await selectModel(f, 'example-fast', 'high');
+    await f.service.switchProfile('chatgpt');
+    await f.service.saveProfile({ ...profile, name: 'Renamed API', apiKey: 'sk-fixture-replacement' });
+    await f.service.switchProfile(profile.id);
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: 'example-fast', model_reasoning_effort: 'high' });
+    expect(f.bridge.start).toHaveBeenLastCalledWith(expect.objectContaining({ apiKey: 'sk-fixture-replacement' }));
+  });
+
+  it('honors an explicitly changed default model instead of an older desktop selection', async () => {
+    const f = await fixture();
+    const profile = await createProfile(f);
+    await f.service.switchProfile(profile.id);
+    await selectModel(f, 'example-pro', 'high');
+    await f.service.switchProfile('chatgpt');
+    await f.service.saveProfile({ ...profile, defaultModel: 'example-fast' });
+    await f.service.switchProfile(profile.id);
+    const config = parse(await readConfig(f.configPath));
+    expect(config.model).toBe('example-fast');
+    expect(config.model_reasoning_effort).toBeUndefined();
+  });
+
+  it('falls back to the configured default after a remembered model is removed', async () => {
+    const f = await fixture();
+    const profile = await createProfile(f);
+    await f.service.switchProfile(profile.id);
+    await selectModel(f, 'example-fast', 'high');
+    await f.service.switchProfile('chatgpt');
+    await f.service.saveProfile({ ...profile, modelIds: ['example-pro'] });
+    await f.service.switchProfile(profile.id);
+    const config = parse(await readConfig(f.configPath));
+    expect(config.model).toBe('example-pro');
+    expect(config.model_reasoning_effort).toBeUndefined();
+  });
+
+  it('rolls back selection changes on a failed switch and saves the latest choice on retry', async () => {
+    const f = await fixture();
+    await f.service.switchProfile('deepseek');
+    await selectModel(f, 'deepseek-v4-pro', 'low');
+    await f.service.switchProfile('chatgpt');
+    await f.service.switchProfile('deepseek');
+    await selectModel(f, 'deepseek-flash', 'max');
+    const original = await readConfig(f.configPath);
+    const previousSecrets = f.store.getSecrets();
+    f.processes.launch.mockRejectedValueOnce(new Error('fixture launch failed'));
+    await expect(f.service.switchProfile('chatgpt')).rejects.toThrow('APP_START_FAILED');
+    expect(await readConfig(f.configPath)).toBe(original);
+    expect(f.store.getSecrets()).toEqual(previousSecrets);
+    expect(f.store.getSecrets().pending).toBeUndefined();
+    await f.service.switchProfile('chatgpt');
+    await f.service.switchProfile('deepseek');
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: 'deepseek-flash', model_reasoning_effort: 'max' });
+  });
+
+  it('removes remembered choices when deleting the corresponding profile', async () => {
+    const f = await fixture();
+    const profile = await createProfile(f);
+    await f.service.switchProfile(profile.id);
+    await selectModel(f, 'example-fast', 'low');
+    await f.service.switchProfile('chatgpt');
+    expect(f.store.getSecrets().profileSelections?.[profile.id]).toBeDefined();
+    await f.service.deleteProfile(profile.id);
+    expect(f.store.getSecrets().profileSelections?.[profile.id]).toBeUndefined();
   });
 });

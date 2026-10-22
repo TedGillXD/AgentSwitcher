@@ -17,11 +17,19 @@ export interface ConfigSnapshot {
   values: Record<string, string | null>;
 }
 
+export interface ModelSelection {
+  home: string;
+  model: string | null;
+  /** Null preserves Codex's automatic/default reasoning setting. */
+  reasoningEffort: string | null;
+}
+
 export interface SecretData {
   apiKey?: string;
   apiKeys?: Record<string, string>;
   activeProfileId?: string;
   snapshot?: ConfigSnapshot;
+  profileSelections?: Record<string, ModelSelection>;
   bridgeToken?: string;
   bridgePort?: number;
   pending?: { home: string; original: string | null; writtenHash: string; previousSecrets?: SecretData };

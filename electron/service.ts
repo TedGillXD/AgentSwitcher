@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import type { ApiProfileConfig, AppState, ConnectionInput, ConnectionResult, ProfileId, SaveProfileInput, SaveSettingsInput, SwitchResult } from '../shared/types';
 import { PROVIDER_PRESETS } from '../shared/provider-presets';
 import { availableDeepseekModels } from '../shared/models';
-import { activeProfile, apiConfig, catalogFile, chatgptConfig, configHash, managedEndpoint, snapshotConfig, usesManagedCatalog } from './config';
+import { activeProfile, apiConfig, catalogFile, chatgptConfig, configHash, managedEndpoint, snapshotConfig, snapshotModelSelection, usesManagedCatalog } from './config';
 import { profileModelCatalog } from './catalog';
 import { AppError, errorCode } from './errors';
 import { atomicWrite, readOptional } from './files';
@@ -142,6 +142,7 @@ export class ProfileService {
       }
       let profiles = store.profiles;
       if (legacyChange) {
+        if (settings.deepseekModel !== previous.deepseekModel && secrets.profileSelections) delete secrets.profileSelections.deepseek;
         if (input.clearApiKey) {
           delete secrets.apiKey;
           if (secrets.apiKeys) delete secrets.apiKeys.deepseek;
@@ -190,6 +191,7 @@ export class ProfileService {
       const defaultModel = input.defaultModel || (preferred && modelIds?.includes(preferred) ? preferred : modelIds?.[0]);
       const name = input.name?.trim() || PROVIDER_PRESETS.find((p) => p.preset === input.preset)?.name || new URL(baseUrl).hostname;
       const profile = validateProfile({ ...input, name, baseUrl, modelIds, defaultModel }, id);
+      if (existing && profile.defaultModel !== existing.defaultModel && secrets.profileSelections) delete secrets.profileSelections[id];
       if (apiKey) {
         if (id === 'deepseek') { secrets.apiKey = apiKey; if (secrets.apiKeys?.deepseek) secrets.apiKeys.deepseek = apiKey; }
         else secrets.apiKeys = { ...secrets.apiKeys, [id]: apiKey };
@@ -211,6 +213,7 @@ export class ProfileService {
       const secrets = store.getSecrets();
       if (secrets.apiKeys) delete secrets.apiKeys[id];
       if (id === 'deepseek') delete secrets.apiKey;
+      if (secrets.profileSelections) delete secrets.profileSelections[id];
       await store.update(store.settings, secrets, store.lastSwitchedAt, store.profiles.filter((p) => p.id !== id));
       return this.getState();
     });
@@ -230,6 +233,12 @@ export class ProfileService {
       if (previousProfile && previousSecrets.activeProfileId && previousSecrets.activeProfileId !== previousId) throw new AppError('CONFIG_CONFLICT');
       const previousSwitchedAt = store.lastSwitchedAt;
       const nextSecrets = structuredClone(previousSecrets);
+      if (previousProfile && original) {
+        nextSecrets.profileSelections = {
+          ...nextSecrets.profileSelections,
+          [previousId]: snapshotModelSelection(original, settings.codexHome),
+        };
+      }
       const wasRunning = await processes.isRunning(installation);
       const bridgeWasRunning = bridge.isRunning();
       const previousEndpoint = previousProfile && original ? this.ownedEndpoint(original, previousSecrets) : null;
@@ -260,7 +269,7 @@ export class ProfileService {
           nextSecrets.bridgeToken = token;
           nextSecrets.bridgePort = port;
           nextSecrets.activeProfileId = id;
-          next = apiConfig(original ?? '', settings.codexHome, port, token, target);
+          next = apiConfig(original ?? '', settings.codexHome, port, token, target, nextSecrets.profileSelections?.[id]);
         } else {
           const snapshot = nextSecrets.snapshot?.home === resolve(settings.codexHome) ? nextSecrets.snapshot : undefined;
           next = chatgptConfig(original ?? '', snapshot);

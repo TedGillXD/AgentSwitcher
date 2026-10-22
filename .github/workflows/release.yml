@@ -205,6 +205,10 @@ jobs:
           - macOS x64: Intel Mac；macOS arm64: Apple Silicon (M1 及更新)。
           - macOS 使用 DMG 安装，也提供 ZIP；SHA256SUMS.txt 可校验下载文件。
 
+          修复第三方配置的模型与推理强度记忆：DeepSeek、GLM、Kimi 等配置分别保留在 Codex 中最后选择的参数，切回 GPT 订阅再返回或重启 AgentSwitcher 后仍能恢复。切换失败会回滚配置与记忆。
+
+          Fixes model and reasoning-effort preferences for third-party profiles. Each profile remembers its last Codex selection across ChatGPT round trips and AgentSwitcher restarts. Failed switches roll back both the configuration and saved preferences.
+
           新增应用内更新：在“通用设置 → 应用更新”检查本仓库的最新正式版，下载对应系统和架构的安装包，校验 SHA-256 后安装并重启。更新保留已保存的配置与密钥；安装前请先保存草稿，API 连接会在重启时短暂中断。macOS 使用退出后替换与旧版备份，Windows 使用原位升级安装程序。
 
           Adds in-app updates in General settings: check this repository for the latest stable release, download the matching platform and architecture, verify SHA-256, then install and restart. Saved configurations and keys are preserved. Save unsaved changes first; API connections pause during restart. macOS replaces the app after exit with a backup; Windows runs the in-place upgrade installer.
