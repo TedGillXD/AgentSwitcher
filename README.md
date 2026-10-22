@@ -22,7 +22,7 @@ macOS 安装包要求 macOS 13 或更新版本，同时提供 ZIP 包。安装�
 - 自动读取服务商模型列表，每套配置可选择多个模型和默认模型；高级选项可以手动填写模型及接口协议。
 - 密钥由 Windows DPAPI / macOS Keychain 提供的 Electron `safeStorage` 加密，仅存本机；不会返回给界面，不写入 `localStorage` 或 Codex 配置。
 - 简体中文 / English，语言持久化；支持开机启动和托盘菜单切换。Windows 面板靠近托盘、macOS 面板位于菜单栏图标下方，支持多屏及不同缩放比例。
-- 在“通用设置 → 应用更新”手动检查 GitHub 最新正式版，下载对应系统与架构的安装包，校验 SHA-256 后安装更新并重启。
+- 在“通用设置 → 应用更新”手动检查 GitHub 最新正式版，跟随系统代理（含 PAC）下载对应系统与架构的安装包，校验 SHA-256 后安装更新并重启。0.2.4 / 0.2.5 如出现浏览器能下载、应用内下载失败，请先从发布页手动安装新版一次。
 - 保留配置注释、MCP、项目权限及其他无关设置；加密保存恢复信息、原子写入、检测外部编辑冲突，失败回滚，启动时恢复未完成事务。
 
 AgentSwitcher 提供本机凭证代理，绑定 `127.0.0.1`，不同配置切换时更换随机令牌。Codex 的配置中保存的是该本机令牌，各配置的真实 API Key 分别加密保存，仅由主进程解密。请求直接从本机发往设置的服务商，无自建云端服务、账号系统、遥测或同步。
@@ -45,6 +45,7 @@ pnpm test                 # 配置、存储、进程和本机 HTTP 代理测试
 pnpm build                # 类型检查与生产构建
 pnpm test:electron        # 真实 Electron / IPC / 系统加密烟测，需先 build
 pnpm test:update:mac      # macOS 临时应用自升级烟测，需设置 AGENT_SWITCHER_EXECUTABLE 为已打包应用的可执行文件
+pnpm test:update:network  # 隔离会话的本地代理、重定向和流式取消验证，不请求外部网络
 pnpm test:force-stop      # Windows：仅强制结束独立临时测试进程，需 Node 24
 pnpm pack:dir             # 当前平台可运行目录
 pnpm dist:win             # Windows x64 + ARM64 NSIS 安装包

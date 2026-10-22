@@ -65,6 +65,7 @@ jobs:
           sparse-checkout: |
             scripts/smoke-electron.mjs
             scripts/smoke-update-mac.mjs
+            scripts/smoke-update-network.mjs
             tests/update-installer.test.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -89,6 +90,8 @@ jobs:
       - if: runner.os == 'Windows'
         run: pnpm test:force-stop
       - run: pnpm build
+      - name: Test update system proxy and redirects
+        run: node .release-tools/scripts/smoke-update-network.mjs
       - name: Test native Electron
         if: runner.os == 'Windows'
         # macOS runs the packaged binary below so a second app identity cannot
@@ -200,6 +203,10 @@ jobs:
           set -euo pipefail
           cat > release-notes.md <<'NOTES'
           Windows 和 macOS 安装包 / Windows and macOS installers.
+
+          修复“浏览器能下载，应用内更新却连接失败”：更新检查和下载现在跟随系统代理，兼容系统 PAC 配置，并保留 GitHub 下载重定向检查、流式下载与 SHA-256 校验。0.2.4 / 0.2.5 如无法下载更新，请先通过浏览器下载本版安装包并手动安装一次。
+
+          Fixes update downloads failing while browser downloads work. Update requests now use the system proxy and PAC settings while retaining redirect validation, streaming, and SHA-256 verification. If v0.2.4 or v0.2.5 cannot download updates, install this release once using your browser.
 
           - Windows x64: Intel / AMD PC；Windows arm64: ARM PC。
           - macOS x64: Intel Mac；macOS arm64: Apple Silicon (M1 及更新)。

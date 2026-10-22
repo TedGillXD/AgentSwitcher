@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, screen, shell, Tray } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, safeStorage, screen, shell, Tray } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,6 +12,7 @@ import { version as packageVersion } from '../package.json';
 import { getPanelBounds } from './panel-position';
 import { AppUpdater, type VerifiedUpdate } from './updater';
 import { completePendingUpdate, prepareUpdateInstall } from './update-installer';
+import { createUpdateFetch } from './update-network';
 
 const mainDirectory = dirname(fileURLToPath(import.meta.url));
 app.setName('AgentSwitcher');
@@ -371,7 +372,7 @@ if (hasLock) app.whenReady().then(async () => {
     currentVersion: app.isPackaged ? app.getVersion() : packageVersion,
     platform: process.platform, arch: app.runningUnderARM64Translation ? 'arm64' : process.arch,
     packaged: app.isPackaged, cacheDirectory: join(app.getPath('userData'), 'updates'),
-    fetch: (input, init) => fetch(input, init),
+    fetch: createUpdateFetch(options => net.request(options)),
     onChange: broadcastUpdate, install: installApplicationUpdate,
   });
   const codec = {

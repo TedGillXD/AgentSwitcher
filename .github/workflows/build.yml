@@ -29,6 +29,7 @@ jobs:
       - if: runner.os == 'Windows'
         run: pnpm test:force-stop
       - run: pnpm build
+      - run: pnpm test:update:network
       - run: pnpm test:electron
       - if: runner.os == 'Windows'
         run: pnpm exec electron-builder --win nsis --x64 --publish never

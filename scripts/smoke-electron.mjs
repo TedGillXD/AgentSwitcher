@@ -3,6 +3,7 @@
 import { _electron as electron, expect } from '@playwright/test';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
@@ -236,26 +237,37 @@ try {
   const updateAsset = `AgentSwitcher-${updateVersion}-${updateTarget.platform}-${updateTarget.arch}.${process.platform === 'darwin' ? 'zip' : 'exe'}`;
   const updateContents = 'Verified update smoke fixture; never executed or extracted.';
   const updateHash = createHash('sha256').update(updateContents).digest('hex');
-  await application.evaluate((_electron, fixture) => {
-    globalThis.__smokeUpdateOriginalFetch = globalThis.fetch;
-    const base = `https://github.com/TedGillXD/AgentSwitcher/releases/download/v${fixture.version}/`;
-    globalThis.fetch = async input => {
-      const url = String(input instanceof Request ? input.url : input);
-      if (url === 'https://api.github.com/repos/TedGillXD/AgentSwitcher/releases/latest') return new Response(JSON.stringify({
-        tag_name: `v${fixture.version}`, draft: false, prerelease: false,
-        html_url: `https://github.com/TedGillXD/AgentSwitcher/releases/tag/v${fixture.version}`,
+  const updateBase = `https://github.com/TedGillXD/AgentSwitcher/releases/download/v${updateVersion}/`;
+  const updateFixtureServer = createHttpServer((request, response) => {
+    if (request.url === '/latest') {
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({
+        tag_name: `v${updateVersion}`, draft: false, prerelease: false,
+        html_url: `https://github.com/TedGillXD/AgentSwitcher/releases/tag/v${updateVersion}`,
         published_at: '2026-10-21T12:00:00Z', body: 'Update IPC smoke fixture',
         assets: [
-          { name: fixture.asset, browser_download_url: base + fixture.asset, size: fixture.contents.length, digest: `sha256:${fixture.hash}` },
-          { name: 'SHA256SUMS.txt', browser_download_url: base + 'SHA256SUMS.txt', size: fixture.hash.length + fixture.asset.length + 3 },
+          { name: updateAsset, browser_download_url: updateBase + updateAsset, size: Buffer.byteLength(updateContents), digest: `sha256:${updateHash}` },
+          { name: 'SHA256SUMS.txt', browser_download_url: updateBase + 'SHA256SUMS.txt', size: Buffer.byteLength(`${updateHash}  ${updateAsset}\n`) },
         ],
-      }), { headers: { 'content-type': 'application/json' } });
-      if (url === base + 'SHA256SUMS.txt') return new Response(`${fixture.hash}  ${fixture.asset}\n`);
-      if (url === base + fixture.asset) return new Response(fixture.contents, { headers: { 'content-length': String(fixture.contents.length) } });
-      throw new Error('Unexpected smoke update request');
-    };
-  }, { version: updateVersion, asset: updateAsset, hash: updateHash, contents: updateContents });
+      }));
+    } else if (request.url === '/checksums') response.end(`${updateHash}  ${updateAsset}\n`);
+    else if (request.url === '/installer') {
+      response.setHeader('Content-Length', Buffer.byteLength(updateContents));
+      response.end(updateContents);
+    } else { response.writeHead(404); response.end(); }
+  });
+  await new Promise((resolveListen, reject) => { updateFixtureServer.once('error', reject); updateFixtureServer.listen(0, '127.0.0.1', resolveListen); });
   try {
+    await application.evaluate(({ net }, fixture) => {
+      globalThis.__smokeUpdateOriginalRequest = net.request;
+      net.request = options => {
+        const url = typeof options === 'string' ? options : options.url;
+        const path = url === 'https://api.github.com/repos/TedGillXD/AgentSwitcher/releases/latest' ? '/latest'
+          : url === fixture.base + 'SHA256SUMS.txt' ? '/checksums' : url === fixture.base + fixture.asset ? '/installer' : null;
+        if (!path) throw new Error('Unexpected smoke update request');
+        return globalThis.__smokeUpdateOriginalRequest({ ...options, url: fixture.local + path });
+      };
+    }, { base: updateBase, asset: updateAsset, local: `http://127.0.0.1:${updateFixtureServer.address().port}` });
     const available = await reopened.evaluate(() => window.agentSwitcher.checkForUpdates());
     expect(available.status).toBe('available');
     expect(available.latestVersion).toBe(updateVersion);
@@ -284,7 +296,8 @@ try {
       expect(downloaded.error).toBe('UPDATE_UNSUPPORTED');
     }
   } finally {
-    await application.evaluate(() => { globalThis.fetch = globalThis.__smokeUpdateOriginalFetch; });
+    try { await application.evaluate(({ net }) => { if (globalThis.__smokeUpdateOriginalRequest) net.request = globalThis.__smokeUpdateOriginalRequest; }); }
+    finally { await new Promise(resolveClose => { updateFixtureServer.close(resolveClose); updateFixtureServer.closeAllConnections(); }); }
   }
 
   stage('verify busy quit requests receive feedback');

@@ -155,14 +155,14 @@ try {
   await expect(page.locator('.profile-card')).not.toHaveCount(0, { timeout: 45000 });
   expect(await application.evaluate(({ app }) => app.getPath('userData'))).toBe(userData);
   expect((await page.evaluate(() => window.agentSwitcher.getState())).version).toBe(sourceVersion);
-  await application.evaluate(({ dialog }, fixture) => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (input, init) => {
-      const url = String(input instanceof Request ? input.url : input);
+  await application.evaluate(({ dialog, net }, fixture) => {
+    const originalRequest = net.request;
+    net.request = options => {
+      const url = typeof options === 'string' ? options : options.url;
       const path = url === 'https://api.github.com/repos/TedGillXD/AgentSwitcher/releases/latest' ? '/latest'
         : url === fixture.base + 'SHA256SUMS.txt' ? '/checksums' : url === fixture.base + fixture.asset ? '/installer' : null;
       if (!path) throw new Error('Unexpected update smoke request');
-      return originalFetch(fixture.local + path, init);
+      return originalRequest({ ...options, url: fixture.local + path });
     };
     dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
   }, { base, asset, local });

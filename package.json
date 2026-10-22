@@ -1,6 +1,6 @@
 {
   "name": "agent-switcher",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "A local-first Codex profile switcher for Windows and macOS",
   "author": "AgentSwitcher contributors",
   "license": "MIT",
@@ -24,6 +24,7 @@
     "test:watch": "vitest",
     "test:electron": "node scripts/smoke-electron.mjs",
     "test:update:mac": "node scripts/smoke-update-mac.mjs",
+    "test:update:network": "node scripts/smoke-update-network.mjs",
     "test:force-stop": "node scripts/smoke-force-stop.mjs",
     "icons": "node scripts/generate-icons.mjs",
     "pack:dir": "pnpm build && electron-builder --dir",
