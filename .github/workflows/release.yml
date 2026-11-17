@@ -204,13 +204,13 @@ jobs:
           cat > release-notes.md <<'NOTES'
           Windows 和 macOS 安装包 / Windows and macOS installers.
 
-          修复 macOS 切换到 DeepSeek 等 API 配置后，旧聊天出现“模型不支持 ChatGPT 账号”的问题。已有聊天仍可能沿用原服务商连接，与切换后的全局模型不匹配。现在实际切换配置后会自动打开 Codex 模式的新聊天，让新配置生效；普通重启、同配置重应用和失败回滚保留原行为。
+          0.2.8 修复显式填写 `http://` 的内网 API 地址在发起请求前被本地校验拒绝、立即显示“设置内容无效”的问题。HTTP / HTTPS 地址现在统一支持配置校验、模型发现、保存后重新加载和实际代理转发。
 
-          Fixes the ChatGPT-account model error after switching to DeepSeek or another API profile on macOS. Existing chats can retain their original provider while the global model changes. Profile changes now open a fresh chat explicitly in Codex mode. Ordinary restarts, reapplying the same profile, and failed-switch rollbacks preserve their previous behavior.
+          Version 0.2.8 fixes explicitly entered `http://` intranet API URLs being rejected by local validation before a request was sent, immediately showing “Invalid settings”. HTTP and HTTPS now work consistently for validation, model discovery, saving and reloading profiles, and proxy forwarding.
 
-          切换提示与说明已更新：已有聊天保留原服务商，需要继续时请切回原配置；Windows 请在切换后手动新建聊天。API 模式下请保持 AgentSwitcher 运行。登录凭证和聊天历史保持不变。
+          仍拒绝 URL 内嵌用户名/密码、查询参数和片段，请求不跟随重定向。优先使用 HTTPS；HTTP 会明文传输 API Key 和请求内容，仅在受信任网络中使用。
 
-          Updated bilingual guidance explains how to continue existing chats with their original profile. On Windows, start a new chat after switching. Keep AgentSwitcher running for API profiles. Login credentials and chat history are preserved.
+          URLs with embedded credentials, query parameters or fragments remain rejected, and requests do not follow redirects. Prefer HTTPS; HTTP sends API keys and request content in plaintext and should only be used on trusted networks.
 
           - Windows x64: Intel / AMD PC；Windows arm64: ARM PC。
           - macOS x64: Intel Mac；macOS arm64: Apple Silicon (M1 及更新)。

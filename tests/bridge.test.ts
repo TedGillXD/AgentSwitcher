@@ -1,5 +1,5 @@
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalBridge, type BridgeOptions } from '../electron/bridge';
 import { listenOnLoopback } from '../electron/bridge/listen';
 
@@ -37,6 +37,7 @@ async function readBody(request: IncomingMessage): Promise<unknown> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(bridges.splice(0).map((bridge) => bridge.stop()));
   await Promise.all(upstreams.splice(0).map((server) => new Promise<void>((resolve) => {
     server.close(() => resolve());
@@ -45,6 +46,26 @@ afterEach(async () => {
 });
 
 describe('LocalBridge credential proxy', () => {
+  it.each(['http', 'https'])('forwards to an explicitly configured %s gateway with a non-local hostname', async (protocol) => {
+    const baseUrl = `${protocol}://api_gateway.internal.example:4000/v1`;
+    const nativeFetch = globalThis.fetch;
+    const upstreamFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"id":"resp_gateway","output":[]}', {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    const { url } = await proxy(baseUrl, { protocol: 'responses' });
+    const payload = { model: 'deepseek-flash', input: 'hello', stream: false };
+    const result = await nativeFetch(`${url}/v1/responses`, {
+      method: 'POST', headers: { Authorization: `Bearer ${proxyToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual({ id: 'resp_gateway', output: [] });
+    expect(upstreamFetch).toHaveBeenCalledExactlyOnceWith(new URL(`${baseUrl}/responses`), expect.objectContaining({
+      method: 'POST', body: JSON.stringify(payload), redirect: 'error',
+      headers: { Authorization: `Bearer ${providerKey}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+    }));
+  });
+
   it('preserves the requested Responses model and substitutes only the upstream credential', async () => {
     let received: { url?: string; headers?: IncomingMessage['headers']; body?: unknown } = {};
     const baseUrl = await upstream((request, response) => {
@@ -336,12 +357,14 @@ describe('LocalBridge credential proxy', () => {
     await expect(Promise.race([closed.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 1000))])).resolves.toBe(true);
   });
 
-  it('rejects insecure remote URLs and embedded credentials, and can stop/rebind its original port', async () => {
+  it('rejects unsupported protocols and embedded credentials, and can stop/rebind its original port', async () => {
     const bridge = new LocalBridge();
     bridges.push(bridge);
     const options = { token: proxyToken, apiKey: providerKey, model: 'deepseek-flash' };
-    await expect(bridge.start({ ...options, baseUrl: 'http://provider.example' })).rejects.toThrow('HTTPS');
-    await expect(bridge.start({ ...options, baseUrl: 'https://user:password@provider.example' })).rejects.toThrow('credentials');
+    for (const baseUrl of ['ftp://provider.example', 'file:///tmp/provider', 'https://user:password@provider.example',
+      'http://user:password@provider.example', 'http://provider.example?key=secret', 'http://provider.example#fragment']) {
+      await expect(bridge.start({ ...options, baseUrl })).rejects.toThrow('HTTP or HTTPS without embedded credentials');
+    }
     const baseUrl = await upstream((_request, response) => {
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end('{}');

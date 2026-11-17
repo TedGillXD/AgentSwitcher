@@ -29,6 +29,8 @@ AgentSwitcher 提供本机凭证代理，绑定 `127.0.0.1`，不同配置切换
 
 支持原生 Responses API 和 OpenAI 兼容 Chat Completions。自动检测模式先请求 Responses，仅在服务商明确返回 404、405 或 501 时适配 Chat Completions；认证、限流和服务器错误不会重试另一种协议。已知只支持 Chat Completions 的地址可在高级选项直接指定协议。
 
+0.2.8 修复显式填写 `http://` 的内网 API 地址在发起请求前被本地校验拒绝的问题。HTTP / HTTPS 地址现在统一支持配置校验、模型发现、保存后重新加载和实际代理转发；仍拒绝 URL 内嵌用户名/密码、查询参数和片段，请求不跟随重定向。优先使用 HTTPS；HTTP 会明文传输 API Key 和请求内容，仅在受信任网络中使用。
+
 ## 开发与运行
 
 需要 Node.js 22.16+（建议 24）及 pnpm 11.25.0。
@@ -118,3 +120,5 @@ Run `pnpm install && pnpm dev`. Build with `pnpm build`, run tests with `pnpm te
 Use a new chat after switching providers. On macOS, changing configurations automatically opens a new chat; on other platforms, create one manually. A normal restart does not open a new chat. Existing chats retain their saved `model_provider`, so a ChatGPT chat can still use `openai` after the global model changes to DeepSeek. This mismatch causes errors such as `The 'deepseek-flash' model is not supported when using Codex with a ChatGPT account.` Switch back to the original configuration to continue an earlier chat. There is no need to delete `auth.json`, sign out, or edit chat history; AgentSwitcher leaves them intact.
 
 The loopback proxy forwards native Responses API requests or adapts them to OpenAI-compatible Chat Completions. Automatic model discovery uses `/models`; custom services without discovery require manual model IDs. Your actual key is never written to Codex configuration or renderer storage. There is no AgentSwitcher cloud service. Platform login, real provider inference and signed distribution require acceptance testing on each target OS.
+
+Version 0.2.8 fixes local validation rejecting explicitly entered `http://` intranet API URLs before a request was sent. HTTP and HTTPS now work consistently for validation, model discovery, saving and reloading profiles, and proxy forwarding. URLs with embedded credentials, query parameters or fragments remain rejected, and requests do not follow redirects. Prefer HTTPS; HTTP sends API keys and request content in plaintext and should only be used on trusted networks.

@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import type { ApiProfileConfig, Settings, SaveProfileInput, SaveSettingsInput } from '../shared/types';
 import { availableDeepseekModels } from '../shared/models';
+import { normalizeProviderBaseUrl } from '../shared/provider-url';
 import { AppError } from './errors';
 import { atomicWrite, readOptional } from './files';
 
@@ -89,13 +90,7 @@ export function defaultSettings(env = process.env, home = homedir()): Settings {
 }
 
 export function validateBaseUrl(input: string): string {
-  let url: URL;
-  try { url = new URL(input); } catch { throw new AppError('INVALID_SETTINGS'); }
-  // A custom endpoint is allowed, but secrets must never travel over plaintext HTTP.
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
-    throw new AppError('INVALID_SETTINGS');
-  }
-  return url.href.replace(/\/+$/, '');
+  try { return normalizeProviderBaseUrl(input); } catch { throw new AppError('INVALID_SETTINGS'); }
 }
 
 export function validateSettings(input: SaveSettingsInput): Settings {

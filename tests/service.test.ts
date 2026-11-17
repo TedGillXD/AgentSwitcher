@@ -627,9 +627,9 @@ describe('ProfileService recovery and settings', () => {
     expect(await readConfig(f.configPath)).toBe(ORIGINAL);
   });
 
-  it('rejects malformed settings and insecure credential endpoints before persistence', async () => {
+  it('rejects malformed settings and credential-bearing endpoints before persistence', async () => {
     const f = await fixture();
-    for (const deepseekBaseUrl of ['http://provider.example', 'https://key:secret@provider.example', 'https://provider.example?token=secret', 'https://provider.example#fragment']) {
+    for (const deepseekBaseUrl of ['ftp://provider.example', 'https://key:secret@provider.example', 'https://provider.example?token=secret', 'https://provider.example#fragment']) {
       await expect(f.service.saveSettings({ ...f.settings, deepseekBaseUrl })).rejects.toThrow('INVALID_SETTINGS');
     }
     await expect(f.service.saveSettings({ ...f.settings, apiKey: 'key\r\ninjected-header:secret' })).rejects.toThrow('INVALID_SETTINGS');
@@ -761,6 +761,24 @@ describe('ProfileService managed model catalog upgrades', () => {
 });
 
 describe('ProfileService connection checks', () => {
+  it('tests an HTTP API URL by requesting its model catalog without persisting the draft or issuing inference', async () => {
+    const f = await fixture();
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"data":[{"id":"internal-fast"}]}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const stored = await readConfig(f.storePath);
+    const result = await f.service.testConnection({
+      apiKey: 'sk-http-draft', baseUrl: 'http://api_gateway.internal.example:4000/v1',
+    });
+
+    expect(result).toMatchObject({ ok: true, models: ['internal-fast'] });
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('http://api_gateway.internal.example:4000/v1/models', expect.objectContaining({
+      headers: { Authorization: 'Bearer sk-http-draft' }, redirect: 'error',
+    }));
+    expect(await readConfig(f.storePath)).toBe(stored);
+    expect(f.bridge.start).not.toHaveBeenCalled();
+    expect(f.processes.stop).not.toHaveBeenCalled();
+  });
+
   it('uses the stored key when the renderer explicitly supplies an undefined optional apiKey', async () => {
     const f = await fixture();
     const fetchMock = vi.fn().mockResolvedValue(new Response('{"data":[{"id":"deepseek-flash"}]}', { status: 200 }));
@@ -799,7 +817,7 @@ describe('ProfileService connection checks', () => {
     const error = await f.service.testConnection();
     expect(error.error).toBe('CONNECTION_FAILED');
     expect(JSON.stringify(error)).not.toContain(API_KEY);
-    expect((await f.service.testConnection({ baseUrl: 'http://provider.example' })).error).toBe('INVALID_SETTINGS');
+    expect((await f.service.testConnection({ baseUrl: 'ftp://provider.example' })).error).toBe('INVALID_SETTINGS');
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
@@ -904,6 +922,32 @@ describe('ProfileService API profile management', () => {
 });
 
 describe('ProfileService API model discovery', () => {
+  it('discovers and persists an HTTP API profile that remains valid after reloading', async () => {
+    const f = await fixture();
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"data":[{"id":"internal-fast"},{"id":"internal-pro"}]}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const profile = await createProfile(f, {
+      baseUrl: ' http://api_gateway.internal.example:4000/v1/chat/completions/ ',
+      modelIds: undefined, defaultModel: undefined, apiKey: '  sk-http-saved  ',
+    });
+
+    expect(profile).toMatchObject({
+      baseUrl: 'http://api_gateway.internal.example:4000/v1', modelIds: ['internal-fast', 'internal-pro'], defaultModel: 'internal-fast',
+    });
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('http://api_gateway.internal.example:4000/v1/models', expect.objectContaining({
+      headers: { Authorization: 'Bearer sk-http-saved' }, redirect: 'error',
+    }));
+    const restored = new LocalStore(f.storePath, codec, f.settings);
+    await restored.load();
+    expect(restored.profiles.find((saved) => saved.id === profile.id)).toMatchObject({
+      baseUrl: profile.baseUrl, modelIds: profile.modelIds, defaultModel: profile.defaultModel,
+    });
+    expect(restored.getSecrets().apiKeys?.[profile.id]).toBe('sk-http-saved');
+    expect(await readConfig(f.storePath)).not.toContain('sk-http-saved');
+    expect(f.bridge.start).not.toHaveBeenCalled();
+    expect(f.processes.stop).not.toHaveBeenCalled();
+  });
+
   it('discovers, deduplicates, and validates models from the entered API URL and key without an inference call', async () => {
     const f = await fixture();
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [

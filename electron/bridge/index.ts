@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream } from 'node:stream/web';
 import { availableDeepseekModels } from '../../shared/models';
+import { normalizeProviderBaseUrl } from '../../shared/provider-url';
 import { fromChatResponse, streamChatResponse, toChatRequest, type ChatRequest } from './chat-completions';
 import { BridgeRequestError as RequestError } from './errors';
 import { listenOnLoopback } from './listen';
@@ -97,11 +98,7 @@ export class LocalBridge {
   }
 
   async start(options: BridgeOptions): Promise<{ port: number }> {
-    const base = new URL(options.baseUrl);
-    const local = ['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname);
-    if ((base.protocol !== 'https:' && !(base.protocol === 'http:' && local)) || base.username || base.password || base.search || base.hash) {
-      throw new Error('The provider URL must use HTTPS, or HTTP on localhost, without embedded credentials.');
-    }
+    const base = new URL(normalizeProviderBaseUrl(options.baseUrl));
     if (!options.apiKey || options.apiKey.includes('\r') || options.apiKey.includes('\n') || options.token.length < 16 || !options.model) {
       throw new Error('The local proxy credentials or model are invalid.');
     }

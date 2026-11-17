@@ -216,13 +216,17 @@ describe('settings validation boundaries', () => {
     expect(validateSettings({ ...settings, hideOnBlur: true }).hideOnBlur).toBe(false);
   });
 
-  it('normalizes HTTPS endpoints while retaining explicit API paths and ports', () => {
+  it('normalizes HTTP and HTTPS endpoints while retaining explicit API paths and ports', () => {
     expect(validateBaseUrl('https://API.DeepSeek.com/v1///')).toBe('https://api.deepseek.com/v1');
     expect(validateBaseUrl('https://deepseek.example:8443/v1')).toBe('https://deepseek.example:8443/v1');
+    expect(validateBaseUrl('http://api_gateway.internal.example:4000/v1///')).toBe('http://api_gateway.internal.example:4000/v1');
   });
 
   it.each([
-    'http://api.deepseek.com',
+    'ftp://api.deepseek.com',
+    'http://user:password@api_gateway.internal.example:4000/v1',
+    'http://api_gateway.internal.example:4000/v1?key=secret',
+    'http://api_gateway.internal.example:4000/v1#secret',
     'https://user:password@api.deepseek.com',
     'https://api.deepseek.com?key=secret',
     'https://api.deepseek.com/#secret',
@@ -268,6 +272,23 @@ function apiProfile(id = 'glm'): ApiProfileConfig {
 }
 
 describe('multiple API profile persistence and migration', () => {
+  it('round-trips an HTTP API profile with an intranet-style hostname, port, and path', async () => {
+    const codec = aesCodec();
+    const store = new LocalStore(storePath, codec, settings);
+    const profile: ApiProfileConfig = {
+      ...apiProfile('internal'), name: 'Internal API', preset: 'custom',
+      baseUrl: 'http://api_gateway.internal.example:4000/v1',
+    };
+    const secrets: SecretData = { apiKeys: { internal: 'sk-internal-private' } };
+    await store.update(settings, secrets, null, [profile]);
+
+    const restored = new LocalStore(storePath, codec, settings);
+    await restored.load();
+    expect(restored.profiles).toEqual([profile]);
+    expect(profileApiKey(restored.getSecrets(), 'internal')).toBe('sk-internal-private');
+    expect(await readFile(storePath, 'utf8')).not.toContain('sk-internal-private');
+  });
+
   it('migrates legacy DeepSeek metadata in memory without rewriting credentials or the original file', async () => {
     const codec = aesCodec();
     const initial = new LocalStore(storePath, codec, settings);
