@@ -17,7 +17,7 @@ macOS 安装包要求 macOS 13 或更新版本，同时提供 ZIP 包。安装�
 
 ## 功能
 
-- 主面板快速切换 ChatGPT 登录和多套 API 配置，并重新启动 Codex；正常退出超时后可强制终止。
+- 主面板和托盘可切换 ChatGPT 个人订阅、全部第三方 API 或任一单独配置。进入聚合模式后，可以直接在 Codex 的模型菜单中切换各套 API 的模型。
 - 独立的配置管理窗口，支持新增、编辑、删除配置。内置 DeepSeek、GLM、Kimi 模板，也支持自定义名称、API 地址和 API Key。
 - 自动读取服务商模型列表，每套配置可选择多个模型和默认模型；高级选项可以手动填写模型及接口协议。
 - 密钥由 Windows DPAPI / macOS Keychain 提供的 Electron `safeStorage` 加密，仅存本机；不会返回给界面，不写入 `localStorage` 或 Codex 配置。
@@ -66,11 +66,13 @@ pnpm dist:mac             # macOS Intel + Apple Silicon DMG / ZIP
 4. 自动识别传统 Codex 和新版使用 `ChatGPT.exe` / `ChatGPT.app` 的桌面应用；如未检测到，请在配置管理窗口的“通用设置”选择对应应用。
 5. 在主面板选择配置并确认重启。先尝试正常退出，5 秒内未退出时强制终止桌面进程；运行中的任务会中断，未保存工作可能丢失，请先保存工作。切换后请在新聊天中使用目标配置：macOS 会自动打开新聊天，其他平台请手动新建。已有聊天保留原服务商，需要继续时请切回原配置。切回 ChatGPT 会复用现有登录；尚未登录时由 Codex 自己完成登录。
 
+选择「全部第三方 API」可汇总所有已保存密钥的配置。Codex 以「模型名 · 配置名」显示模型，按各套配置的地址、密钥、协议和思考强度发送请求。在聚合模式内换模型无需重启。若在同一聊天中改选另一家服务商，新服务商会收到该聊天的可用上下文。需要隔离上下文时，请新建聊天。
+
 自定义 API、GLM 和 Kimi 可在“高级选项”的“支持的思考强度”中按模型勾选服务商支持的档位。保存并切换到该配置后，可在 Codex 的模型菜单中选择档位。
 
 默认使用 `$CODEX_HOME`，否则使用 `~/.codex`。全局配置也会影响共用此目录的 CLI / IDE。程序不会修改 `auth.json`，也不会读取或重写操作系统中的 Codex 登录凭证。切换到 ChatGPT 会设置 `forced_login_method = "chatgpt"`，避免静默使用 OpenAI API 计费。
 
-API 模式下需要保持 AgentSwitcher 驻留。主动退出会提示连接中断，重新打开后恢复原端口；如果端口被其他程序占用会报告错误。编辑或删除正在使用的配置前，请先切到 ChatGPT 或另一套配置。测试连接和自动发现仅查询模型目录，不发送推理请求。关闭配置管理窗口会隐藏窗口并保留未保存草稿；有未保存改动时，切到其他配置会提示确认丢弃。
+API 模式下需要保持 AgentSwitcher 驻留。主动退出会提示连接中断，重新打开后恢复原端口；如果端口被其他程序占用会报告错误。编辑或删除正在使用的配置前，请先切到 ChatGPT 或另一套配置。聚合模式下更改配置也需要先切走。测试连接和自动发现仅查询模型目录，不发送推理请求。关闭配置管理窗口会隐藏窗口并保留未保存草稿；有未保存改动时，切到其他配置会提示确认丢弃。
 
 加载失败或操作仍在等待时，也可以点击关闭按钮收起窗口。保存或切换尚未完成时，退出会明确提示等待；完成后可再次退出。系统确认框会显示在所属窗口上方，避免被置顶面板遮挡。
 
@@ -115,7 +117,7 @@ scripts/               图标生成、真实 Electron 烟测
 
 ## English
 
-AgentSwitcher is a local desktop tray utility for Windows and macOS. Switch Codex between ChatGPT sign-in and multiple API configurations, then restart Codex. A separate configuration window manages DeepSeek, GLM, Kimi and custom providers, each with its own URL, encrypted key and model list. It includes Chinese and English UI, model discovery, conflict detection, atomic updates, rollback and crash recovery.
+AgentSwitcher is a local desktop tray utility for Windows and macOS. Switch Codex between ChatGPT sign-in, All third-party APIs, and standalone API configurations. In All third-party APIs mode, choose a model from any configuration with a saved key in Codex without restarting. Model names include the configuration name, and requests use that configuration's URL, encrypted key, protocol and reasoning settings. Start a new chat to keep context separate when changing providers. A separate window manages DeepSeek, GLM, Kimi and custom providers. AgentSwitcher includes Chinese and English UI, model discovery, conflict detection, atomic updates, rollback and crash recovery.
 
 Run `pnpm install && pnpm dev`. Build with `pnpm build`, run tests with `pnpm test`, and package on the target OS using `pnpm dist:win` or `pnpm dist:mac`. Output goes to `release/`. Keep AgentSwitcher running while an API profile is active; switch away before editing it. Existing ChatGPT credentials are reused without editing the native credential cache. Finish running Codex tasks before switching.
 

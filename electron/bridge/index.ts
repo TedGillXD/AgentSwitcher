@@ -1,28 +1,117 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream } from 'node:stream/web';
+import type { ApiProtocol } from '../../shared/types';
 import { availableDeepseekModels } from '../../shared/models';
 import { normalizeProviderBaseUrl } from '../../shared/provider-url';
 import { fromChatResponse, streamChatResponse, toChatRequest, type ChatRequest } from './chat-completions';
 import { BridgeRequestError as RequestError } from './errors';
 import { listenOnLoopback } from './listen';
+import { prepareRoutedInput, wrapRoutedJson, wrapRoutedStream } from './response-provenance';
 
-export interface BridgeOptions {
+interface BridgeListenerOptions {
   port?: number;
   token: string;
-  apiKey: string;
-  baseUrl: string;
   model: string;
-  /** Auto falls back only when the Responses route is explicitly unsupported. */
-  protocol?: 'responses' | 'chat_completions' | 'auto';
-  /** Exact model allowlist. Omitted only for legacy DeepSeek configurations. */
-  models?: string[];
   /** Bounds a provider request, including its streaming response. */
   timeoutMs?: number;
   /** Text and image requests are bounded before parsing. Defaults to 64 MiB. */
   maxRequestBytes?: number;
+}
+
+export interface SingleBridgeOptions extends BridgeListenerOptions {
+  apiKey: string;
+  baseUrl: string;
+  /** Auto falls back only when the Responses route is explicitly unsupported. */
+  protocol?: ApiProtocol;
+  /** Exact model allowlist. Omitted only for legacy DeepSeek configurations. */
+  models?: string[];
+  routes?: never;
+  continuationKey?: never;
+}
+
+export interface BridgeModelRoute {
+  slug: string;
+  upstreamModel: string;
+  baseUrl: string;
+  apiKey: string;
+  protocol: ApiProtocol;
+}
+
+export type BridgeOptions = SingleBridgeOptions | (BridgeListenerOptions & {
+  routes: readonly BridgeModelRoute[];
+  /** Secret persisted across listener token rotations so same-route history can resume. */
+  continuationKey?: string;
+  apiKey?: never;
+  baseUrl?: never;
+  protocol?: never;
+  models?: never;
+});
+
+interface Upstream {
+  base: URL;
+  apiKey: string;
+  protocol?: ApiProtocol;
+}
+
+interface BoundModelRoute extends Upstream {
+  upstreamModel: string;
+  responseKey?: Buffer;
+}
+
+interface ModelRoutes {
+  bySlug: ReadonlyMap<string, BoundModelRoute>;
+  localModels: boolean;
+  unsupportedModel: string;
+}
+
+function bindUpstream(baseUrl: string, apiKey: string, protocol?: ApiProtocol): Upstream {
+  const base = new URL(normalizeProviderBaseUrl(baseUrl));
+  if (typeof apiKey !== 'string' || !apiKey || /[\r\n\x00]/.test(apiKey)) {
+    throw new Error('The local proxy credentials or model are invalid.');
+  }
+  if (protocol !== undefined && !['responses', 'chat_completions', 'auto'].includes(protocol)) {
+    throw new Error('The local proxy protocol or model list is invalid.');
+  }
+  return { base, apiKey, protocol };
+}
+
+function bindModelRoutes(options: BridgeOptions): ModelRoutes {
+  const bySlug = new Map<string, BoundModelRoute>();
+  if (options.routes !== undefined) {
+    const continuationKey = options.continuationKey ?? options.token;
+    if (!Array.isArray(options.routes) || options.baseUrl !== undefined || options.apiKey !== undefined ||
+      options.protocol !== undefined || options.models !== undefined || typeof continuationKey !== 'string' || continuationKey.length < 16) {
+      throw new Error('The local proxy model routes are invalid.');
+    }
+    for (const route of options.routes) {
+      if (!route || typeof route.slug !== 'string' || !route.slug.trim() || bySlug.has(route.slug) ||
+        typeof route.upstreamModel !== 'string' || !route.upstreamModel.trim() || route.protocol === undefined) {
+        throw new Error('The local proxy model routes are invalid.');
+      }
+      const upstream = bindUpstream(route.baseUrl, route.apiKey, route.protocol);
+      const responseKey = createHmac('sha256', continuationKey)
+        .update(JSON.stringify([route.slug, upstream.base.href, upstream.apiKey, route.upstreamModel, upstream.protocol]))
+        .digest();
+      bySlug.set(route.slug, { ...upstream, upstreamModel: route.upstreamModel, responseKey });
+    }
+    if (!bySlug.has(options.model)) throw new Error('The local proxy default model is not routed.');
+    return { bySlug, localModels: true, unsupportedModel: 'This model is not enabled for the combined API connection. Select a configured model in Codex.' };
+  }
+
+  const { model, models } = options;
+  if (models !== undefined && (!Array.isArray(models) || !models.includes(model) ||
+    models.some((slug) => typeof slug !== 'string' || !slug.trim()))) {
+    throw new Error('The local proxy protocol or model list is invalid.');
+  }
+  const upstream = bindUpstream(options.baseUrl, options.apiKey, options.protocol);
+  for (const slug of models ?? availableDeepseekModels(model)) bySlug.set(slug, { ...upstream, upstreamModel: slug });
+  const unsupportedModel = models
+    ? 'This model is not enabled for this API connection. Select a configured model in Codex.'
+    : 'This model is not enabled for this DeepSeek connection. Select a listed DeepSeek model in Codex.';
+  return { bySlug, localModels: false, unsupportedModel };
 }
 
 function json(response: ServerResponse, status: number, message: string): void {
@@ -98,25 +187,19 @@ export class LocalBridge {
   }
 
   async start(options: BridgeOptions): Promise<{ port: number }> {
-    const base = new URL(normalizeProviderBaseUrl(options.baseUrl));
-    if (!options.apiKey || options.apiKey.includes('\r') || options.apiKey.includes('\n') || options.token.length < 16 || !options.model) {
+    if (typeof options.token !== 'string' || options.token.length < 16 || typeof options.model !== 'string' || !options.model.trim()) {
       throw new Error('The local proxy credentials or model are invalid.');
     }
     if (options.port !== undefined && (!Number.isInteger(options.port) || options.port < 0 || options.port > 65535)) {
       throw new Error('The local proxy port is invalid.');
     }
-    if ((options.protocol !== undefined && !['responses', 'chat_completions', 'auto'].includes(options.protocol)) ||
-        (options.models !== undefined && (!Array.isArray(options.models) || !options.models.length ||
-          options.models.some((model) => typeof model !== 'string' || !model.trim()) || !options.models.includes(options.model)))) {
-      throw new Error('The local proxy protocol or model list is invalid.');
-    }
-    // Snapshot configuration so a caller cannot change credentials or the
-    // allowlist of a running listener by mutating its original options object.
-    options = { ...options, ...(options.models ? { models: [...options.models] } : {}) };
+    // Validate and snapshot before replacing an existing listener.
+    const routes = bindModelRoutes(options);
+    const listener = { port: options.port, token: options.token, model: options.model, timeoutMs: options.timeoutMs, maxRequestBytes: options.maxRequestBytes };
     await this.stop();
     let port = 0;
     const server = createServer((request, response) => {
-      void this.handle(request, response, options, base, port);
+      void this.handle(request, response, listener, routes, port);
     });
     server.maxConnections = 32;
     server.requestTimeout = 30_000;
@@ -126,7 +209,7 @@ export class LocalBridge {
       if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
     });
     try {
-      port = await listenOnLoopback(server, options.port ?? 0);
+      port = await listenOnLoopback(server, listener.port ?? 0);
     } catch {
       server.close();
       throw new Error('The local proxy port is unavailable.');
@@ -147,7 +230,7 @@ export class LocalBridge {
     });
   }
 
-  private async handle(request: IncomingMessage, response: ServerResponse, options: BridgeOptions, base: URL, port: number): Promise<void> {
+  private async handle(request: IncomingMessage, response: ServerResponse, options: BridgeListenerOptions, routes: ModelRoutes, port: number): Promise<void> {
     let controller: AbortController | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -181,6 +264,12 @@ export class LocalBridge {
         request.resume();
         return;
       }
+      if (models && routes.localModels) {
+        const data = [...routes.bySlug.keys()].map((id) => ({ id, object: 'model', created: 0, owned_by: 'agent-switcher' }));
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+        response.end(JSON.stringify({ object: 'list', data }));
+        return;
+      }
       if (this.controllers.size >= 8) {
         json(response, 429, 'The local proxy is busy. Try again shortly.');
         request.resume();
@@ -193,22 +282,20 @@ export class LocalBridge {
       response.once('close', () => { if (!response.writableFinished) abort(); });
       timer = setTimeout(abort, options.timeoutMs ?? 300_000);
       timer.unref();
-      let body: string | undefined;
       let input: Record<string, unknown> | undefined;
       if (responses) {
         if ((request.headers['content-type'] ?? '').toLowerCase().split(';')[0]?.trim() !== 'application/json' || request.headers['content-encoding']) {
           throw new RequestError(415, 'An uncompressed application/json request is required.');
         }
         input = await requestBody(request, options.maxRequestBytes ?? 64 * 1024 * 1024, controller.signal);
-        const model = input.model === undefined ? options.model : input.model;
-        if (typeof model !== 'string' || !(options.models ?? availableDeepseekModels(options.model)).includes(model)) {
-          throw new RequestError(400, options.models
-            ? 'This model is not enabled for this API connection. Select a configured model in Codex.'
-            : 'This model is not enabled for this DeepSeek connection. Select a listed DeepSeek model in Codex.');
-        }
-        input = { ...input, model };
-        body = JSON.stringify({ ...input, model });
       }
+      const slug = input?.model === undefined && !routes.localModels ? options.model : input?.model;
+      if (typeof slug !== 'string') throw new RequestError(400, routes.unsupportedModel);
+      const provider = routes.bySlug.get(slug);
+      if (!provider) throw new RequestError(400, routes.unsupportedModel);
+      const { base, apiKey, protocol, upstreamModel, responseKey } = provider;
+      const toChat = (payload: Record<string, unknown>): ChatRequest =>
+        toChatRequest(responseKey ? prepareRoutedInput(payload) : payload, upstreamModel, slug);
       const signal = controller.signal;
       const send = async (route: string, payload: string | undefined): Promise<Response> => {
         const target = new URL(base);
@@ -216,7 +303,7 @@ export class LocalBridge {
         return fetch(target, {
           method: request.method,
           headers: {
-            Authorization: `Bearer ${options.apiKey}`,
+            Authorization: `Bearer ${apiKey}`,
             Accept: 'application/json, text/event-stream',
             ...(payload ? { 'Content-Type': 'application/json' } : {}),
           },
@@ -226,13 +313,14 @@ export class LocalBridge {
         });
       };
       let chat: ChatRequest | undefined;
-      if (responses && options.protocol === 'chat_completions' && input) chat = toChatRequest(input, String(input.model));
-      let upstream = await send(models ? 'models' : chat ? 'chat/completions' : 'responses', chat ? JSON.stringify(chat.body) : body);
+      if (protocol === 'chat_completions' && input) chat = toChat(input);
+      const payload = chat?.body ?? (input && { ...(responseKey ? prepareRoutedInput(input, responseKey) : input), model: upstreamModel });
+      let upstream = await send(models ? 'models' : chat ? 'chat/completions' : 'responses', payload && JSON.stringify(payload));
       // A transport failure, authentication error, rate limit, or server error
       // may follow a charged inference. Never retry those against another API.
-      if (responses && options.protocol === 'auto' && [404, 405, 501].includes(upstream.status) && input) {
+      if (protocol === 'auto' && [404, 405, 501].includes(upstream.status) && input) {
         await upstream.body?.cancel();
-        chat = toChatRequest(input, String(input.model));
+        chat = toChat(input);
         upstream = await send('chat/completions', JSON.stringify(chat.body));
       }
       if (!upstream.ok) {
@@ -276,13 +364,22 @@ export class LocalBridge {
         }
         return;
       }
+      if (responseKey && contentType.startsWith('application/json')) {
+        const payload = await wrapRoutedJson(upstream.body, responseKey);
+        response.writeHead(upstream.status, { 'Content-Type': contentType, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+        response.end(payload);
+        return;
+      }
       response.writeHead(upstream.status, {
         'Content-Type': contentType,
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
       });
       response.flushHeaders();
-      await pipeline(Readable.fromWeb(upstream.body as ReadableStream<Uint8Array>), response);
+      const stream = responseKey
+        ? Readable.from(wrapRoutedStream(upstream.body, responseKey))
+        : Readable.fromWeb(upstream.body as ReadableStream<Uint8Array>);
+      await pipeline(stream, response);
     } catch (error) {
       if (response.headersSent) {
         response.destroy();

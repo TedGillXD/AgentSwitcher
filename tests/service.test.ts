@@ -7,6 +7,7 @@ import { ProfileService } from '../electron/service';
 import { LocalStore, defaultSettings, type SecretCodec, type SecretData } from '../electron/store';
 import { atomicWrite, readOptional } from '../electron/files';
 import { apiConfig, catalogFile, chatgptConfig, configHash, deepseekConfig, managedEndpoint, patchValues, PROVIDER, snapshotConfig } from '../electron/config';
+import { ALL_API_PROFILE_ID } from '../shared/models';
 import { PROVIDER_PRESETS } from '../shared/provider-presets';
 import type { ApiProfile, SaveProfileInput } from '../shared/types';
 import { AppError } from '../electron/errors';
@@ -1341,5 +1342,130 @@ describe('ProfileService remembers each API model selection', () => {
     expect(f.store.getSecrets().profileSelections?.[profile.id]).toBeDefined();
     await f.service.deleteProfile(profile.id);
     expect(f.store.getSecrets().profileSelections?.[profile.id]).toBeUndefined();
+  });
+});
+
+describe('ProfileService aggregate API mode', () => {
+  it('routes namespaced models, preserves native ChatGPT, and remembers aggregate selection across app reload', async () => {
+    const f = await fixture(ORIGINAL, {});
+    const firstKey = 'sk-first-aggregate';
+    const secondKey = 'sk-second-aggregate';
+    const first = await createProfile(f, {
+      name: 'First account', baseUrl: 'https://first.example/v1', protocol: 'responses', apiKey: firstKey,
+      modelIds: ['shared-model'], defaultModel: 'shared-model', reasoningEfforts: { 'shared-model': ['high'] },
+    });
+    const second = await createProfile(f, {
+      name: 'Second account', baseUrl: 'https://second.example/v1', protocol: 'chat_completions', apiKey: secondKey,
+      modelIds: ['shared-model'], defaultModel: 'shared-model', reasoningEfforts: { 'shared-model': ['medium', 'high'] },
+    });
+    const firstModel = `${first.id}/shared-model`;
+    const secondModel = `${second.id}/shared-model`;
+    const catalogPath = catalogFile(f.settings.codexHome, ALL_API_PROFILE_ID);
+    const authPath = join(f.settings.codexHome, 'auth.json');
+    const originalAuth = '{"tokens":{"access_token":"native-chatgpt-fixture"}}\n';
+    await writeFile(authPath, originalAuth);
+
+    const aggregate = await f.service.switchProfile(ALL_API_PROFILE_ID);
+    expect(aggregate.state).toMatchObject({ activeProfile: ALL_API_PROFILE_ID, bridgeRunning: true });
+    expect(aggregate.state.profiles.map(({ id, hasApiKey }) => ({ id, hasApiKey }))).toEqual([
+      { id: 'deepseek', hasApiKey: false }, { id: first.id, hasApiKey: true }, { id: second.id, hasApiKey: true },
+    ]);
+    const continuationKey = f.store.getSecrets().aggregateContinuationKey;
+    expect(continuationKey).toMatch(/^[a-f\d]{64}$/);
+    const routing = {
+      model: firstModel, continuationKey,
+      routes: [
+        { slug: firstModel, upstreamModel: 'shared-model', baseUrl: first.baseUrl, apiKey: firstKey, protocol: 'responses' },
+        { slug: secondModel, upstreamModel: 'shared-model', baseUrl: second.baseUrl, apiKey: secondKey, protocol: 'chat_completions' },
+      ],
+    };
+    expect(f.bridge.start).toHaveBeenLastCalledWith(expect.objectContaining(routing));
+    const aggregateConfig = await readConfig(f.configPath);
+    expect(parse(aggregateConfig)).toMatchObject({
+      model_provider: `agent_switcher_${ALL_API_PROFILE_ID}`, model: firstModel,
+      model_reasoning_effort: 'high', model_catalog_json: catalogPath,
+    });
+    const catalog = await readConfig(catalogPath);
+    expect(JSON.parse(catalog).models).toMatchObject([
+      {
+        slug: firstModel, display_name: 'shared-model · First account', default_reasoning_level: 'high',
+        supported_reasoning_levels: [{ effort: 'high' }],
+      },
+      {
+        slug: secondModel, display_name: 'shared-model · Second account', default_reasoning_level: 'medium',
+        supported_reasoning_levels: [{ effort: 'medium' }, { effort: 'high' }],
+      },
+    ]);
+    for (const credential of [firstKey, secondKey, continuationKey!]) {
+      expect(catalog).not.toContain(credential);
+      expect(aggregateConfig).not.toContain(credential);
+    }
+
+    await selectModel(f, secondModel, 'high');
+    const native = await f.service.switchProfile('chatgpt');
+    expect(native.state).toMatchObject({ activeProfile: 'chatgpt', bridgeRunning: false });
+    const nativeConfig = parse(await readConfig(f.configPath));
+    expect(nativeConfig).toMatchObject({
+      model: 'gpt-fixture', model_provider: 'openai', model_reasoning_effort: 'medium', forced_login_method: 'chatgpt',
+    });
+    expect(nativeConfig.model_catalog_json).toBeUndefined();
+    expect(await readConfig(authPath)).toBe(originalAuth);
+
+    await f.service.switchProfile(ALL_API_PROFILE_ID);
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: secondModel, model_reasoning_effort: 'high' });
+    expect(f.bridge.start).toHaveBeenLastCalledWith(expect.objectContaining(routing));
+    await f.bridge.stop();
+    await writeFile(catalogPath, '{"models":[]}');
+    const reloaded = new LocalStore(f.storePath, codec, f.settings);
+    await reloaded.load();
+    const service = new ProfileService({ store: reloaded, processes: f.processes, bridge: f.bridge, version: 'test' });
+    await service.initialize();
+    expect(await service.getState()).toMatchObject({ activeProfile: ALL_API_PROFILE_ID, bridgeRunning: true, lastError: null });
+    expect(f.bridge.start).toHaveBeenLastCalledWith(expect.objectContaining({ ...routing, port: 41987 }));
+    expect(await readConfig(catalogPath)).toBe(catalog);
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: secondModel, model_reasoning_effort: 'high' });
+  });
+
+  it('restores the aggregate routes and config when switching to an individual API fails', async () => {
+    const f = await fixture();
+    const individual = await createProfile(f);
+    await f.service.switchProfile(ALL_API_PROFILE_ID);
+    await selectModel(f, 'deepseek/deepseek-v4-pro', 'max');
+    const config = await readConfig(f.configPath);
+    const secrets = f.store.getSecrets();
+    const bridge = f.bridge.start.mock.lastCall?.[0];
+
+    f.processes.launch.mockRejectedValueOnce(new Error('fixture launch failed'));
+    await expect(f.service.switchProfile(individual.id)).rejects.toThrow('APP_START_FAILED');
+    expect(await readConfig(f.configPath)).toBe(config);
+    expect(f.store.getSecrets()).toEqual(secrets);
+    expect(f.bridge.start).toHaveBeenLastCalledWith(bridge);
+    expect(await f.service.getState()).toMatchObject({ activeProfile: ALL_API_PROFILE_ID, bridgeRunning: true });
+  });
+
+  it('requires at least one configured key before stopping Codex', async () => {
+    const f = await fixture(ORIGINAL, {});
+    await createProfile(f, { apiKey: undefined });
+
+    await expect(f.service.switchProfile(ALL_API_PROFILE_ID)).rejects.toThrow('API_KEY_REQUIRED');
+    expect(await readConfig(f.configPath)).toBe(ORIGINAL);
+    expect(f.processes.stop).not.toHaveBeenCalled();
+    expect(f.bridge.start).not.toHaveBeenCalled();
+  });
+
+  it('locks API profile edits while aggregate mode runs and allows unrelated settings', async () => {
+    const f = await fixture();
+    const profile = await createProfile(f);
+    await f.service.switchProfile(ALL_API_PROFILE_ID);
+
+    await expect(f.service.saveProfile({ ...profile, apiKey: 'new-key' })).rejects.toThrow('PROFILE_IN_USE');
+    await expect(f.service.deleteProfile(profile.id)).rejects.toThrow('PROFILE_IN_USE');
+    await expect(f.service.saveSettings({ ...f.settings, clearApiKey: true })).rejects.toThrow('PROFILE_IN_USE');
+    const saved = await f.service.saveSettings({ ...f.settings, language: 'en' });
+    expect(saved).toMatchObject({ activeProfile: ALL_API_PROFILE_ID, settings: { language: 'en' } });
+
+    await f.service.switchProfile('chatgpt');
+    const edited = await f.service.saveProfile({ ...profile, name: 'New name' });
+    expect(edited.profiles.find(({ id }) => id === profile.id)?.name).toBe('New name');
   });
 });

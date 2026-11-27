@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import type { ApiProfileConfig, Settings, SaveProfileInput, SaveSettingsInput } from '../shared/types';
-import { availableDeepseekModels, REASONING_EFFORTS, type ReasoningEffort } from '../shared/models';
+import { ALL_API_PROFILE_ID, availableDeepseekModels, REASONING_EFFORTS, type ReasoningEffort } from '../shared/models';
 import { normalizeProviderBaseUrl } from '../shared/provider-url';
 import { AppError } from './errors';
 import { atomicWrite, readOptional } from './files';
@@ -33,6 +33,7 @@ export interface SecretData {
   profileSelections?: Record<string, ModelSelection>;
   bridgeToken?: string;
   bridgePort?: number;
+  aggregateContinuationKey?: string;
   pending?: { home: string; original: string | null; writtenHash: string; previousSecrets?: SecretData };
 }
 
@@ -74,7 +75,7 @@ function validateReasoningEfforts(input: unknown, modelIds: string[]): ApiProfil
 export function validateProfile(input: SaveProfileInput, id: string): ApiProfileConfig {
   const validId = /^[a-z][a-z0-9_-]{0,63}$/;
   const modelId = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
-  if (!input || typeof id !== 'string' || !validId.test(id) || ['chatgpt', 'external'].includes(id) ||
+  if (!input || typeof id !== 'string' || !validId.test(id) || ['chatgpt', 'external', ALL_API_PROFILE_ID].includes(id) ||
     typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > 80 || /[\x00-\x1F]/.test(input.name) ||
     !['deepseek', 'glm', 'kimi', 'custom'].includes(input.preset) ||
     !['auto', 'responses', 'chat_completions'].includes(input.protocol) || typeof input.baseUrl !== 'string' ||

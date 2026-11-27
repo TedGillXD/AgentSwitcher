@@ -57,7 +57,7 @@ function toolOutput(value: unknown): string {
 }
 
 /** Translate stateless Responses history, including real tool round trips. */
-export function toChatRequest(input: ObjectValue, model: string): ChatRequest {
+export function toChatRequest(input: ObjectValue, upstreamModel: string, responseModel = upstreamModel): ChatRequest {
   if (input.previous_response_id) invalid('previous_response_id requires a native Responses connection. Send the complete conversation history instead.');
   if (input.conversation || input.background === true) invalid('Server-side conversation state requires a native Responses connection.');
   const tools = new Map<string, ToolDefinition>();
@@ -141,7 +141,7 @@ export function toChatRequest(input: ObjectValue, model: string): ChatRequest {
     }
     invalid('This conversation item requires a native Responses connection.');
   }
-  const body: ObjectValue = { model, messages, stream: input.stream === true };
+  const body: ObjectValue = { model: upstreamModel, messages, stream: input.stream === true };
   if (chatTools.length) body.tools = chatTools;
   if (input.tool_choice !== undefined) {
     if (typeof input.tool_choice === 'string' && ['auto', 'none', 'required'].includes(input.tool_choice)) body.tool_choice = input.tool_choice;
@@ -158,7 +158,7 @@ export function toChatRequest(input: ObjectValue, model: string): ChatRequest {
     else if (format.type === 'json_schema') body.response_format = { type: 'json_schema', json_schema: { name: format.name, schema: format.schema, ...(format.strict !== undefined ? { strict: format.strict } : {}) } };
   }
   if (body.stream) body.stream_options = { include_usage: true };
-  return { body, tools, model, responseTools: Array.isArray(input.tools) ? input.tools : [], responseToolChoice: input.tool_choice ?? 'auto' };
+  return { body, tools, model: responseModel, responseTools: Array.isArray(input.tools) ? input.tools : [], responseToolChoice: input.tool_choice ?? 'auto' };
 }
 
 function responseEnvelope(request: ChatRequest, status = 'in_progress'): ObjectValue {

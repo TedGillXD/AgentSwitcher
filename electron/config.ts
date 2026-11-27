@@ -3,7 +3,8 @@ import { join, resolve } from 'node:path';
 import { parse } from 'smol-toml';
 import { parseTOML, type AST } from 'toml-eslint-parser';
 import type { ApiProfileConfig, ProfileId } from '../shared/types';
-import { availableDeepseekModels, profileModelReasoning, REASONING_EFFORTS } from '../shared/models';
+import { ALL_API_PROFILE_ID, availableDeepseekModels, profileModelReasoning, REASONING_EFFORTS } from '../shared/models';
+import { codexApiProfile, type CodexApiProfile } from './catalog';
 import { AppError } from './errors';
 import type { ConfigSnapshot, ModelSelection } from './store';
 
@@ -166,19 +167,27 @@ export function deepseekConfig(text: string, home: string, port: number, token: 
 }
 
 export function apiConfig(text: string, home: string, port: number, token: string, profile: ApiProfileConfig, selection?: ModelSelection): string {
+  return managedApiConfig(text, home, port, token, codexApiProfile(profile), selection);
+}
+
+export function managedApiConfig(text: string, home: string, port: number, token: string, profile: CodexApiProfile, selection?: ModelSelection): string {
   if (!profileIdValid(profile.id)) throw new AppError('INVALID_PROFILE');
   const providerId = `${PROVIDER_PREFIX}${profile.id}`;
   const provider = `model_providers.${providerId}`;
   // A removed model (or a different Codex home) must not revive stale choices.
-  const saved = selection?.home === resolve(home) &&
-    (selection.model === null || profile.modelIds.includes(selection.model)) ? selection : undefined;
-  const model = saved?.model ?? profile.defaultModel;
-  const { efforts, defaultEffort } = profileModelReasoning(profile, model);
+  const defaultModel = profile.models[0];
+  if (!defaultModel) throw new AppError('INVALID_PROFILE');
+  const remembered = selection?.home === resolve(home) ? selection : undefined;
+  const selectedModel = remembered?.model ? profile.models.find((model) => model.slug === remembered.model) : undefined;
+  const saved = selectedModel || remembered?.model === null ? remembered : undefined;
+  const model = selectedModel ?? defaultModel;
+  const { efforts, defaultEffort } = profileModelReasoning(model.profile, model.upstreamId);
   const savedEffort = saved?.reasoningEffort;
-  const effort = savedEffort === undefined || (savedEffort !== null && profile.preset !== 'deepseek' &&
-    efforts.length > 0 && !efforts.some((level) => level === savedEffort)) ? defaultEffort : savedEffort;
+  const useDeclaredEfforts = profile.id === ALL_API_PROFILE_ID || (model.profile.preset !== 'deepseek' && efforts.length > 0);
+  const effort = savedEffort === undefined || (savedEffort !== null && useDeclaredEfforts &&
+    !efforts.some((level) => level === savedEffort)) ? defaultEffort : savedEffort;
   return patchValues(text, {
-    model: JSON.stringify(model), model_provider: JSON.stringify(providerId), profile: null,
+    model: JSON.stringify(model.slug), model_provider: JSON.stringify(providerId), profile: null,
     preferred_auth_method: '"apikey"',
     // Custom provider auth is supplied by the local proxy. Do not force an API login,
     // which could log out the user's existing ChatGPT credential cache.

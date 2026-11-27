@@ -1,5 +1,6 @@
 import type { ApiProfileConfig } from './types';
 
+export const ALL_API_PROFILE_ID = 'all-api';
 export const BUILT_IN_DEEPSEEK_MODELS = ['deepseek-flash', 'deepseek-v4-pro'] as const;
 export const REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'ultra', 'max'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];

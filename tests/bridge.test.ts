@@ -1,6 +1,6 @@
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { LocalBridge, type BridgeOptions } from '../electron/bridge';
+import { LocalBridge, type BridgeModelRoute, type SingleBridgeOptions } from '../electron/bridge';
 import { listenOnLoopback } from '../electron/bridge/listen';
 
 const providerKey = 'sk-provider-secret-that-must-stay-in-main';
@@ -15,7 +15,7 @@ async function upstream(handler: (request: IncomingMessage, response: ServerResp
   return `http://127.0.0.1:${port}/provider/v1`;
 }
 
-async function proxy(baseUrl: string, overrides: Partial<BridgeOptions> = {}): Promise<{ bridge: LocalBridge; url: string }> {
+async function proxy(baseUrl: string, overrides: Partial<SingleBridgeOptions> = {}): Promise<{ bridge: LocalBridge; url: string }> {
   const bridge = new LocalBridge();
   bridges.push(bridge);
   const { port } = await bridge.start({ token: proxyToken, apiKey: providerKey, baseUrl, model: 'deepseek-flash', ...overrides });
@@ -78,6 +78,7 @@ describe('LocalBridge credential proxy', () => {
     const { url, bridge } = await proxy(baseUrl);
     const payload = {
       model: 'deepseek-v4-pro',
+      previous_response_id: 'resp_native_previous',
       input: [{ type: 'function_call_output', call_id: 'call_1', output: '42' }],
       tools: [{ type: 'custom', name: 'apply_patch' }],
       reasoning: { effort: 'max' },
@@ -375,5 +376,137 @@ describe('LocalBridge credential proxy', () => {
     expect(bridge.isRunning()).toBe(false);
     expect((await bridge.start({ ...options, baseUrl, port })).port).toBe(port);
     expect(bridge.isRunning()).toBe(true);
+  });
+});
+
+describe('combined API model routes', () => {
+  it('advertises local aliases and keeps duplicate upstream IDs on their own credentials and protocols', async () => {
+    const calls: { provider: string; path: string | undefined; authorization: string | undefined; body: unknown }[] = [];
+    const first = await upstream(async (request, response) => {
+      calls.push({ provider: 'first', path: request.url, authorization: request.headers.authorization, body: await readBody(request) });
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end('{"model":"shared","output":[]}');
+    });
+    const second = await upstream(async (request, response) => {
+      calls.push({ provider: 'second', path: request.url, authorization: request.headers.authorization, body: await readBody(request) });
+      if (request.url === '/provider/v1/responses') {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end('{"choices":[{"message":{"content":"via chat"},"finish_reason":"stop"}]}');
+    });
+    const routes: BridgeModelRoute[] = [
+      { slug: 'first/shared', upstreamModel: 'shared', baseUrl: first, apiKey: 'first-fixture-key', protocol: 'responses' },
+      { slug: 'second/shared', upstreamModel: 'shared', baseUrl: second, apiKey: 'second-fixture-key', protocol: 'auto' },
+    ];
+    const bridge = new LocalBridge();
+    bridges.push(bridge);
+    const { port } = await bridge.start({ token: proxyToken, model: 'first/shared', routes });
+    const url = `http://127.0.0.1:${port}`;
+    await expect(bridge.start({ token: proxyToken, model: 'first/shared', routes: [routes[0]!, routes[0]!] })).rejects.toThrow('model routes');
+    routes[0]!.apiKey = 'mutated-after-listening';
+    expect((await fetch(`${url}/v1/models`)).status).toBe(401);
+    const list = await fetch(`${url}/v1/models`, { headers: { Authorization: `Bearer ${proxyToken}` } });
+    expect(await list.json()).toMatchObject({ object: 'list', data: [{ id: 'first/shared' }, { id: 'second/shared' }] });
+    for (const body of [{ model: 'shared', input: 'No alias' }, { input: 'No model' }]) {
+      expect((await post(url, body)).status).toBe(400);
+    }
+    expect(calls).toHaveLength(0);
+
+    const [responses, chat] = await Promise.all([
+      post(url, { model: 'first/shared', input: 'Use first' }),
+      post(url, { model: 'second/shared', input: 'Use second' }),
+    ]);
+    expect(responses.status).toBe(200);
+    expect(await responses.json()).toMatchObject({ model: 'shared' });
+    expect(chat.status).toBe(200);
+    expect(await chat.json()).toMatchObject({ model: 'second/shared' });
+    expect(calls.filter(({ provider }) => provider === 'first')).toMatchObject([
+      { path: '/provider/v1/responses', authorization: 'Bearer first-fixture-key', body: { model: 'shared', input: 'Use first' } },
+    ]);
+    expect(calls.filter(({ provider }) => provider === 'second')).toMatchObject([
+      { path: '/provider/v1/responses', authorization: 'Bearer second-fixture-key', body: { model: 'shared', input: 'Use second' } },
+      { path: '/provider/v1/chat/completions', authorization: 'Bearer second-fixture-key', body: { model: 'shared', messages: [{ role: 'user', content: 'Use second' }] } },
+    ]);
+  });
+
+  it('restores opaque history only on the originating route, including after a listener token rotation', async () => {
+    const reasoning = { type: 'reasoning', id: 'rs_input', summary: [], encrypted_content: '加密推理' };
+    const message = { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Visible' }], encrypted_content: 'encrypted-message' };
+    const call = { type: 'function_call', name: 'fixture_tool', call_id: 'test-call', arguments: '{}', encrypted_function_args: ['encrypted-argument'] };
+    const compaction = { type: 'compaction', encrypted_content: 'encrypted-compaction' };
+    const output = [reasoning, message, call, compaction];
+    const firstHistory: unknown[] = [];
+    const secondHistory: unknown[] = [];
+    let fallback = false;
+    const first = await upstream(async (request, response) => {
+      const body = await readBody(request) as Record<string, unknown>;
+      firstHistory.push(body);
+      if (fallback && request.url === '/provider/v1/responses') { response.writeHead(404); response.end(); return; }
+      if (request.url === '/provider/v1/chat/completions') {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end('{"choices":[{"message":{"content":"via chat"},"finish_reason":"stop"}]}');
+        return;
+      }
+      if (body.stream) {
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        const item = Buffer.from(`event: response.output_item.done\r\ndata: {"type":"response.output_item.done",\r\ndata: "item":${JSON.stringify(reasoning)}}\r\n\r\n`);
+        const split = item.indexOf('加') + 1;
+        response.write(item.subarray(0, split));
+        response.end(Buffer.concat([item.subarray(split), Buffer.from(`data: ${JSON.stringify({ type: 'response.completed', response: { output } })}\r\n\r\n`)]));
+        return;
+      }
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ output }));
+    });
+    const second = await upstream(async (request, response) => {
+      secondHistory.push((await readBody(request) as Record<string, unknown>).input);
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end('{}');
+    });
+    const routes: BridgeModelRoute[] = [
+      { slug: 'first/model', upstreamModel: 'model', baseUrl: first, apiKey: 'first-fixture-key', protocol: 'auto' },
+      { slug: 'second/model', upstreamModel: 'model', baseUrl: second, apiKey: 'second-fixture-key', protocol: 'responses' },
+    ];
+    const bridge = new LocalBridge();
+    bridges.push(bridge);
+    const options = { model: 'first/model', continuationKey: 'local-persisted-test-provenance-key', routes };
+    const initial = await bridge.start({ ...options, token: proxyToken });
+    const streamed = await post(`http://127.0.0.1:${initial.port}`, { model: 'first/model', input: 'Start', stream: true });
+    const text = await streamed.text();
+    expect(text).toContain('event: response.output_item.done\r\n');
+    const frames = text.split('\r\n').filter((line) => line.startsWith('data: ')).map((line) => JSON.parse(line.slice(6)));
+    const wrapped = frames.at(-1).response.output;
+    expect(wrapped[0].encrypted_content).not.toBe(reasoning.encrypted_content);
+    expect(frames[0].item).toEqual(wrapped[0]);
+
+    const token = 'different-listener-test-bearer-token';
+    const rotated = await bridge.start({ ...options, token });
+    const url = `http://127.0.0.1:${rotated.port}`;
+    const headers = { Authorization: `Bearer ${token}` };
+    const matching = await post(url, { model: 'first/model', input: wrapped }, headers);
+    expect(await matching.json()).toMatchObject({ output: wrapped });
+    expect(firstHistory.at(-1)).toMatchObject({ input: output });
+
+    const other = await post(url, { model: 'second/model', input: wrapped }, headers);
+    expect(other.status).toBe(200);
+    const { encrypted_content: _messageCiphertext, ...portableMessage } = message;
+    const { encrypted_function_args: _callCiphertext, ...portableCall } = call;
+    expect(secondHistory).toEqual([[portableMessage, portableCall]]);
+
+    fallback = true;
+    const converted = await post(url, { model: 'first/model', input: wrapped }, headers);
+    expect(converted.status).toBe(200);
+    expect(firstHistory.at(-1)).toMatchObject({ messages: [{ role: 'assistant', tool_calls: [{ id: 'test-call' }] }] });
+    for (const detached of [
+      { previous_response_id: 'resp_other', input: 'Continue' },
+      { conversation: 'conv_other', input: 'Continue' },
+      { input: [{ type: 'item_reference', id: 'item_other' }] },
+    ]) {
+      expect((await post(url, { model: 'second/model', ...detached }, headers)).status).toBe(400);
+    }
+    expect(secondHistory).toHaveLength(1);
   });
 });

@@ -4,14 +4,14 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { ApiProfileConfig, AppState, ConnectionInput, ConnectionResult, ProfileId, SaveProfileInput, SaveSettingsInput, SwitchResult } from '../shared/types';
 import { PROVIDER_PRESETS } from '../shared/provider-presets';
-import { availableDeepseekModels, profileModelReasoning } from '../shared/models';
-import { activeProfile, apiConfig, catalogFile, chatgptConfig, configHash, managedEndpoint, snapshotConfig, snapshotModelSelection, usesManagedCatalog } from './config';
-import { profileModelCatalog } from './catalog';
+import { ALL_API_PROFILE_ID, availableDeepseekModels, profileModelReasoning } from '../shared/models';
+import { activeProfile, catalogFile, chatgptConfig, configHash, managedApiConfig, managedEndpoint, snapshotConfig, snapshotModelSelection, usesManagedCatalog } from './config';
+import { codexApiProfile, codexModelCatalog, type CatalogModelSource, type CodexApiProfile } from './catalog';
 import { AppError, errorCode } from './errors';
 import { atomicWrite, readOptional } from './files';
 import { LocalStore, profileApiKey, validateBaseUrl, validateProfile, validateSettings, type SecretData } from './store';
 import type { CodexInstallation, CodexProcess } from './platform/codex-process';
-import type { BridgeOptions, LocalBridge } from './bridge';
+import type { BridgeModelRoute, BridgeOptions, LocalBridge } from './bridge';
 
 export interface ServiceOptions {
   store: LocalStore;
@@ -22,6 +22,10 @@ export interface ServiceOptions {
   onChange?: (state: AppState) => void;
   onLoginPreference?: (enabled: boolean) => void;
 }
+
+type ManagedProfile = { catalog: CodexApiProfile } & (
+  { profile: ApiProfileConfig } | { routes: BridgeModelRoute[] }
+);
 
 function retainReasoningEfforts(reasoningEfforts: ApiProfileConfig['reasoningEfforts'], modelIds: string[]): ApiProfileConfig['reasoningEfforts'] {
   if (!reasoningEfforts) return undefined;
@@ -37,7 +41,8 @@ export class ProfileService {
   get configPath(): string { return join(this.options.store.settings.codexHome, 'config.toml'); }
   private selected(text: string | null): string {
     const id = activeProfile(text);
-    return id === 'chatgpt' || id === 'external' || this.options.store.profiles.some((p) => p.id === id) ? id : 'external';
+    return id === 'chatgpt' || id === 'external' || id === ALL_API_PROFILE_ID ||
+      this.options.store.profiles.some((p) => p.id === id) ? id : 'external';
   }
   private profile(id: string): ApiProfileConfig {
     const profile = this.options.store.profiles.find((p) => p.id === id);
@@ -49,14 +54,38 @@ export class ProfileService {
     if (!endpoint || endpoint.token !== secrets.bridgeToken || endpoint.port !== secrets.bridgePort) throw new AppError('CONFIG_CONFLICT');
     return endpoint;
   }
-  private bridgeOptions(profile: ApiProfileConfig, secrets: SecretData, port?: number, token = secrets.bridgeToken): BridgeOptions {
+  private managedProfile(id: string, secrets: SecretData): ManagedProfile {
+    if (id !== ALL_API_PROFILE_ID) {
+      const profile = this.profile(id);
+      return { catalog: codexApiProfile(profile), profile };
+    }
+    const models: CatalogModelSource[] = [];
+    const routes: BridgeModelRoute[] = [];
+    for (const profile of this.options.store.profiles) {
+      const apiKey = profileApiKey(secrets, profile.id);
+      if (!apiKey) continue;
+      for (const { upstreamId } of codexApiProfile(profile).models) {
+        const slug = `${profile.id}/${upstreamId}`;
+        models.push({ slug, upstreamId, profile });
+        routes.push({ slug, upstreamModel: upstreamId, baseUrl: profile.baseUrl, apiKey, protocol: profile.protocol });
+      }
+    }
+    if (!routes.length) throw new AppError('API_KEY_REQUIRED');
+    return { catalog: { id, name: 'All third-party APIs', models }, routes };
+  }
+  private bridgeOptions(target: ManagedProfile, secrets: SecretData, port?: number, token = secrets.bridgeToken): BridgeOptions {
+    if (!token) throw new AppError('CONFIG_CONFLICT');
+    if ('routes' in target) return {
+      port, token, model: target.catalog.models[0]!.slug, routes: target.routes,
+      continuationKey: secrets.aggregateContinuationKey,
+    };
+    const { profile } = target;
     const apiKey = profileApiKey(secrets, profile.id);
     if (!apiKey) throw new AppError('API_KEY_REQUIRED');
-    if (!token) throw new AppError('CONFIG_CONFLICT');
     return { port, token, apiKey, baseUrl: profile.baseUrl, model: profile.defaultModel, models: profile.modelIds, protocol: profile.protocol };
   }
-  private async writeCatalog(profile: ApiProfileConfig): Promise<void> {
-    await atomicWrite(catalogFile(this.options.store.settings.codexHome, profile.id), profileModelCatalog(profile));
+  private async writeCatalog(profile: CodexApiProfile): Promise<void> {
+    await atomicWrite(catalogFile(this.options.store.settings.codexHome, profile.id), codexModelCatalog(profile));
   }
   async initialize(): Promise<void> {
     try {
@@ -84,11 +113,11 @@ export class ProfileService {
       const text = await readOptional(this.configPath);
       const selected = this.selected(text);
       if (text && selected !== 'chatgpt' && selected !== 'external') {
-        const profile = this.profile(selected);
+        const profile = this.managedProfile(selected, secrets);
         const endpoint = this.ownedEndpoint(text, secrets);
         if (secrets.activeProfileId && secrets.activeProfileId !== selected) throw new AppError('CONFIG_CONFLICT');
         const options = this.bridgeOptions(profile, secrets, endpoint.port, endpoint.token);
-        if (usesManagedCatalog(text, store.settings.codexHome)) await this.writeCatalog(profile);
+        if (usesManagedCatalog(text, store.settings.codexHome)) await this.writeCatalog(profile.catalog);
         await bridge.start(options);
       }
       if (recovering) {
@@ -141,6 +170,7 @@ export class ProfileService {
       if (apiActive && resolve(settings.codexHome) !== resolve(previous.codexHome)) throw new AppError('CONFIG_HOME_ACTIVE');
       const legacyChange = Boolean(input.apiKey?.trim() || input.clearApiKey) ||
         settings.deepseekBaseUrl !== previous.deepseekBaseUrl || settings.deepseekModel !== previous.deepseekModel;
+      if (selected === ALL_API_PROFILE_ID && legacyChange) throw new AppError('PROFILE_IN_USE');
       if (selected === 'deepseek' && legacyChange) {
         if (input.clearApiKey) throw new AppError('API_KEY_IN_USE');
         throw new AppError('RESTART_REQUIRED');
@@ -179,7 +209,8 @@ export class ProfileService {
           (input.apiKey !== undefined && (typeof input.apiKey !== 'string' || input.apiKey.length > 4096 || /[\r\n\x00]/.test(input.apiKey)))) throw new AppError('INVALID_PROFILE');
       const id = input.id ?? 'api-' + randomUUID();
       const existing = input.id ? this.profile(input.id) : undefined;
-      if (this.selected(await readOptional(this.configPath)) === id) throw new AppError('PROFILE_IN_USE');
+      const selected = this.selected(await readOptional(this.configPath));
+      if (selected === id || selected === ALL_API_PROFILE_ID) throw new AppError('PROFILE_IN_USE');
       const secrets = store.getSecrets();
       const apiKey = input.clearApiKey ? undefined : input.apiKey?.trim() || profileApiKey(secrets, id);
       const baseUrl = this.normalizeBase(input.baseUrl);
@@ -226,7 +257,8 @@ export class ProfileService {
     return this.locked(async () => {
       const { store } = this.options;
       this.profile(id);
-      if (this.selected(await readOptional(this.configPath)) === id) throw new AppError('PROFILE_IN_USE');
+      const selected = this.selected(await readOptional(this.configPath));
+      if (selected === id || selected === ALL_API_PROFILE_ID) throw new AppError('PROFILE_IN_USE');
       const secrets = store.getSecrets();
       if (secrets.apiKeys) delete secrets.apiKeys[id];
       if (id === 'deepseek') delete secrets.apiKey;
@@ -236,21 +268,22 @@ export class ProfileService {
     });
   }
   async switchProfile(id: ProfileId): Promise<SwitchResult> {
-    if (id !== 'chatgpt' && !this.options.store.profiles.some((p) => p.id === id)) throw new AppError('INVALID_PROFILE');
+    if (id !== 'chatgpt' && id !== ALL_API_PROFILE_ID && !this.options.store.profiles.some((p) => p.id === id)) throw new AppError('INVALID_PROFILE');
     return this.locked(async () => {
       const { store, processes, bridge } = this.options;
       const settings = store.settings;
-      const target = id === 'chatgpt' ? undefined : this.profile(id);
+      const previousSecrets = store.getSecrets();
+      if (id !== 'chatgpt' && !store.encryptionAvailable) throw new AppError('ENCRYPTION_UNAVAILABLE');
+      const target = id === 'chatgpt' ? undefined : this.managedProfile(id, previousSecrets);
       const installation = await this.installation();
       const path = this.configPath;
       const original = await readOptional(path);
       const previousId = this.selected(original);
-      const previousProfile = store.profiles.find((p) => p.id === previousId);
-      const previousSecrets = store.getSecrets();
-      if (previousProfile && previousSecrets.activeProfileId && previousSecrets.activeProfileId !== previousId) throw new AppError('CONFIG_CONFLICT');
+      const previousManaged = previousId !== 'chatgpt' && previousId !== 'external';
+      if (previousManaged && previousSecrets.activeProfileId && previousSecrets.activeProfileId !== previousId) throw new AppError('CONFIG_CONFLICT');
       const previousSwitchedAt = store.lastSwitchedAt;
       const nextSecrets = structuredClone(previousSecrets);
-      if (previousProfile && original) {
+      if (previousManaged && original) {
         nextSecrets.profileSelections = {
           ...nextSecrets.profileSelections,
           [previousId]: snapshotModelSelection(original, settings.codexHome),
@@ -258,9 +291,9 @@ export class ProfileService {
       }
       const wasRunning = await processes.isRunning(installation);
       const bridgeWasRunning = bridge.isRunning();
-      const previousEndpoint = previousProfile && original ? this.ownedEndpoint(original, previousSecrets) : null;
-      const previousBridge = bridgeWasRunning && previousProfile && previousEndpoint
-        ? this.bridgeOptions(previousProfile, previousSecrets, previousEndpoint.port, previousEndpoint.token) : null;
+      const previousEndpoint = previousManaged && original ? this.ownedEndpoint(original, previousSecrets) : null;
+      const previousBridge = bridgeWasRunning && previousEndpoint
+        ? this.bridgeOptions(this.managedProfile(previousId, previousSecrets), previousSecrets, previousEndpoint.port, previousEndpoint.token) : null;
       let bridgeChanged = false;
       let written: string | null = null;
       let stopped = false;
@@ -270,13 +303,12 @@ export class ProfileService {
         let next: string;
         let targetBridge: BridgeOptions | undefined;
         if (target) {
-          if (!store.encryptionAvailable) throw new AppError('ENCRYPTION_UNAVAILABLE');
-          if (!profileApiKey(nextSecrets, id)) throw new AppError('API_KEY_REQUIRED');
-          if (!previousProfile) nextSecrets.snapshot = snapshotConfig(original ?? '', settings.codexHome);
+          if (!previousManaged) nextSecrets.snapshot = snapshotConfig(original ?? '', settings.codexHome);
+          if ('routes' in target) nextSecrets.aggregateContinuationKey ??= randomBytes(32).toString('hex');
           const token = previousId === id && nextSecrets.bridgeToken ? nextSecrets.bridgeToken : randomBytes(32).toString('hex');
           let port = nextSecrets.bridgePort;
           targetBridge = this.bridgeOptions(target, nextSecrets, port, token);
-          if (!bridgeWasRunning && !previousProfile) {
+          if (!bridgeWasRunning && !previousManaged) {
             const started = await bridge.start(targetBridge);
             bridgeChanged = true;
             port = started.port;
@@ -286,7 +318,7 @@ export class ProfileService {
           nextSecrets.bridgeToken = token;
           nextSecrets.bridgePort = port;
           nextSecrets.activeProfileId = id;
-          next = apiConfig(original ?? '', settings.codexHome, port, token, target, nextSecrets.profileSelections?.[id]);
+          next = managedApiConfig(original ?? '', settings.codexHome, port, token, target.catalog, nextSecrets.profileSelections?.[id]);
         } else {
           const snapshot = nextSecrets.snapshot?.home === resolve(settings.codexHome) ? nextSecrets.snapshot : undefined;
           next = chatgptConfig(original ?? '', snapshot);
@@ -305,7 +337,7 @@ export class ProfileService {
             await bridge.stop();
             await bridge.start(targetBridge);
           }
-          await this.writeCatalog(target);
+          await this.writeCatalog(target.catalog);
         }
         await atomicWrite(path, next);
         written = next;
@@ -353,13 +385,14 @@ export class ProfileService {
       const installation = await this.installation();
       const { store, bridge } = this.options;
       const text = await readOptional(this.configPath);
-      const profile = store.profiles.find((p) => p.id === this.selected(text));
-      if (profile && text) {
+      const id = this.selected(text);
+      if (text && id !== 'chatgpt' && id !== 'external') {
         const secrets = store.getSecrets();
-        if (secrets.activeProfileId && secrets.activeProfileId !== profile.id) throw new AppError('CONFIG_CONFLICT');
+        if (secrets.activeProfileId && secrets.activeProfileId !== id) throw new AppError('CONFIG_CONFLICT');
+        const profile = this.managedProfile(id, secrets);
         const endpoint = this.ownedEndpoint(text, secrets);
         const options = this.bridgeOptions(profile, secrets, endpoint.port, endpoint.token);
-        if (usesManagedCatalog(text, store.settings.codexHome)) await this.writeCatalog(profile);
+        if (usesManagedCatalog(text, store.settings.codexHome)) await this.writeCatalog(profile.catalog);
         if (!bridge.isRunning()) await bridge.start(options);
       }
       await this.stopApp(installation, true);

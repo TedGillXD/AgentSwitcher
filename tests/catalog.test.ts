@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { modelCatalog, profileModelCatalog } from '../electron/catalog';
+import { codexApiProfile, codexModelCatalog, modelCatalog, profileModelCatalog } from '../electron/catalog';
+import { ALL_API_PROFILE_ID } from '../shared/models';
 
 interface CatalogModel {
   slug: string;
@@ -75,4 +76,17 @@ describe('generic API profile model catalog', () => {
     })).models;
     expect(models[0]).toMatchObject({ input_modalities: ['text'], supports_image_detail_original: false, context_window: 131072 });
   });
+});
+
+it('distinguishes matching model and configuration names in the combined catalog', () => {
+  const members = ['first', 'second'].map((id) => codexApiProfile({
+    id, name: 'Work', preset: 'custom', baseUrl: 'https://custom.example/v1', protocol: 'auto',
+    modelIds: ['common-model'], defaultModel: 'common-model',
+  }));
+  const models = members.flatMap((member) => member.models.map((model) => ({ ...model, slug: `${member.id}/${model.slug}` })));
+  const result = JSON.parse(codexModelCatalog({ id: ALL_API_PROFILE_ID, name: 'All APIs', models }));
+  expect(result.models).toMatchObject([
+    { slug: 'first/common-model', display_name: 'common-model · Work (1)' },
+    { slug: 'second/common-model', display_name: 'common-model · Work (2)' },
+  ]);
 });

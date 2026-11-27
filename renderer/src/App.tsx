@@ -5,7 +5,7 @@ import {
   LockKeyhole, Pencil, Plus, Power, RefreshCw, Settings2, ShieldCheck, Sparkles,
   Terminal, Trash2, X, Zap,
 } from 'lucide-react';
-import { REASONING_EFFORTS, type ReasoningEffort } from '../../shared/models';
+import { ALL_API_PROFILE_ID, REASONING_EFFORTS, type ReasoningEffort } from '../../shared/models';
 import type { ApiProfile, ApiProtocol, AppState, ConnectionResult, Language, ProviderPreset, SaveProfileInput, Settings, UpdateState } from '../../shared/types';
 import { PROVIDER_PRESETS } from '../../shared/provider-presets';
 import { translator, type Translate } from './i18n';
@@ -155,14 +155,17 @@ function App() {
 function Panel({ controller: c }: { controller: Controller }) {
   const { state, t } = c;
   const profiles = state.profiles ?? [];
-  const activeApi = profiles.some((profile) => profile.id === state.activeProfile);
+  const allApiActive = state.activeProfile === ALL_API_PROFILE_ID;
+  const allApiBusy = c.busy === `switch:${ALL_API_PROFILE_ID}`;
+  const availableApiCount = profiles.filter((profile) => profile.hasApiKey).length;
+  const activeApi = allApiActive || profiles.some((profile) => profile.id === state.activeProfile);
   const openManager = (id?: string) => void c.run('manage', () => api!.openSettings(id));
   const switched = state.lastSwitchedAt ? new Intl.DateTimeFormat(state.settings.language, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(state.lastSwitchedAt)) : null;
   return <>
     <div className="panel-toolbar"><span><Zap size={15} />{t('profiles')}</span><button className="text-button" disabled={c.disabled} onClick={() => openManager()}><Settings2 size={14} />{t('manage')}<ChevronRight size={13} /></button></div>
     <main className="content panel-content">
       <section className="workspace-panel"><div className="workspace-icon"><Terminal size={24} strokeWidth={1.6} /><span /></div><div className="workspace-info"><h1>{t('workspace')}</h1><p>{t('tagline')}</p></div><span className={`status-pill ${state.codexRunning ? 'running' : ''}`}><span className="status-dot" />{!state.codexInstalled ? t('notDetected') : state.codexRunning ? t('running') : t('stopped')}</span></section>
-      <div className="section-heading"><h2>{t('activeConfiguration')}</h2><span className="profile-count">{String(profiles.length + 1).padStart(2, '0')}</span></div>
+      <div className="section-heading"><h2>{t('activeConfiguration')}</h2></div>
       {state.activeProfile === 'external' && <div className="external-note"><CircleDot size={15} /><div><strong>{t('external')}</strong><p>{t('externalHint')}</p></div></div>}
       <div className="profile-list">
         <section className={`profile-card ${state.activeProfile === 'chatgpt' ? 'is-active' : ''}`}>
@@ -170,15 +173,36 @@ function Panel({ controller: c }: { controller: Controller }) {
           <p className="profile-description">{t('chatgptDescription')}</p>
           <div className="profile-bottom"><span className="profile-meta"><span className="tiny-dot green" />{t('nativeLogin')}</span>{state.activeProfile === 'chatgpt' ? <CheckCheck size={18} className="current-check" /> : <button className="button profile-switch" disabled={c.disabled || !state.codexInstalled} onClick={() => c.confirm({ kind: 'switch', id: 'chatgpt', name: 'ChatGPT' })}>{t('switch')}<ArrowRight size={14} /></button>}</div>
         </section>
-        {profiles.map((profile) => <section key={profile.id} className={`profile-card ${state.activeProfile === profile.id ? 'is-active' : ''}`}>
-          <div className="profile-topline"><ProviderIcon preset={profile.preset} /><div className="profile-identity"><h3>{profile.name}</h3><p title={profile.baseUrl}>{host(profile.baseUrl)}</p></div>{state.activeProfile === profile.id && <ActiveBadge t={t} />}<button className="icon-button profile-edit" aria-label={t('editNamed', { name: profile.name })} title={t('editNamed', { name: profile.name })} disabled={c.disabled} onClick={() => openManager(profile.id)}><Pencil size={13} /></button></div>
-          <div className="profile-models" title={profile.modelIds.join(', ')}>{profile.modelIds.slice(0, 3).map((model) => <span key={model}>{model}</span>)}{profile.modelIds.length > 3 && <span>+{profile.modelIds.length - 3}</span>}{!profile.modelIds.length && <em>{t('discoverAutomatically')}</em>}</div>
-          <div className="profile-bottom"><span className={`profile-meta ${profile.hasApiKey ? '' : 'muted'}`}>{profile.hasApiKey ? <><KeyRound size={12} />{t('keySaved')}</> : <><span className="tiny-dot amber" />{t('keyRequired')}</>}</span>{state.activeProfile === profile.id ? <CheckCheck size={18} className="current-check" /> : profile.hasApiKey ? <button className="button profile-switch" disabled={c.disabled || !state.codexInstalled || !state.encryptionAvailable} onClick={() => c.confirm({ kind: 'switch', id: profile.id, name: profile.name })}>{c.busy === `switch:${profile.id}` ? <LoaderCircle size={13} className="spin" /> : null}{c.busy === `switch:${profile.id}` ? t('switching') : t('switch')}<ArrowRight size={14} /></button> : <button className="button profile-setup" disabled={c.disabled} onClick={() => openManager(profile.id)}>{t('setUp')}<ChevronRight size={14} /></button>}</div>
-        </section>)}
+        <section className={`profile-card ${allApiActive ? 'is-active' : ''}`}>
+          <div className="profile-topline">
+            <ProviderIcon preset="custom" />
+            <div className="profile-identity"><h3>{t('allApis')}</h3></div>
+            {allApiActive && <ActiveBadge t={t} />}
+          </div>
+          <p className="profile-description">{t(availableApiCount ? 'allApisDescription' : 'allApisSetupHint')}</p>
+          <div className="profile-bottom">
+            <span className="profile-meta"><span className={`tiny-dot ${availableApiCount ? 'green' : 'amber'}`} />{t('availableApiCount', { count: availableApiCount })}</span>
+            {allApiActive ? <CheckCheck size={18} className="current-check" /> : availableApiCount ? (
+              <button className="button profile-switch" disabled={c.disabled || !state.codexInstalled || !state.encryptionAvailable} onClick={() => c.confirm({ kind: 'switch', id: ALL_API_PROFILE_ID, name: t('allApis') })}>
+                {allApiBusy && <LoaderCircle size={13} className="spin" />}{t(allApiBusy ? 'switching' : 'switch')}<ArrowRight size={14} />
+              </button>
+            ) : <button className="button profile-setup" disabled={c.disabled} onClick={() => openManager()}>{t('setUp')}<ChevronRight size={14} /></button>}
+          </div>
+        </section>
       </div>
-      <button className="add-profile-panel" disabled={c.disabled} onClick={() => openManager('new')}><Plus size={16} /><span>{t('addProfile')}</span><span className="add-profile-brands">GLM / Kimi / API</span></button>
-      {!state.codexInstalled && <button className="setup-note" disabled={c.disabled} onClick={() => openManager('general')}><CircleAlert size={15} /><span>{t('appMissing')}</span><ChevronRight size={14} /></button>}
       {activeApi && <div className={`bridge-note ${state.bridgeRunning ? '' : 'offline'}`}><span className={`tiny-dot ${state.bridgeRunning ? 'green' : 'amber'}`} /><div><strong>{t(state.bridgeRunning ? 'bridgeActive' : 'bridgeOffline')}</strong><p>{t('bridgeHint')}</p></div></div>}
+      {profiles.length > 0 && <section className="individual-profiles">
+        <div className="section-heading"><h2>{t('individualApis')}</h2></div>
+        <div className="profile-list">
+          {profiles.map((profile) => <section key={profile.id} className={`profile-card ${state.activeProfile === profile.id ? 'is-active' : ''}`}>
+            <div className="profile-topline"><ProviderIcon preset={profile.preset} /><div className="profile-identity"><h3>{profile.name}</h3><p title={profile.baseUrl}>{host(profile.baseUrl)}</p></div>{state.activeProfile === profile.id && <ActiveBadge t={t} />}<button className="icon-button profile-edit" aria-label={t(allApiActive ? 'viewNamed' : 'editNamed', { name: profile.name })} title={t(allApiActive ? 'viewNamed' : 'editNamed', { name: profile.name })} disabled={c.disabled} onClick={() => openManager(profile.id)}>{allApiActive ? <Eye size={13} /> : <Pencil size={13} />}</button></div>
+            <div className="profile-models" title={profile.modelIds.join(', ')}>{profile.modelIds.slice(0, 3).map((model) => <span key={model}>{model}</span>)}{profile.modelIds.length > 3 && <span>+{profile.modelIds.length - 3}</span>}{!profile.modelIds.length && <em>{t('discoverAutomatically')}</em>}</div>
+            <div className="profile-bottom"><span className={`profile-meta ${profile.hasApiKey ? '' : 'muted'}`}>{profile.hasApiKey ? <><KeyRound size={12} />{t('keySaved')}</> : <><span className="tiny-dot amber" />{t('keyRequired')}</>}</span>{state.activeProfile === profile.id ? <CheckCheck size={18} className="current-check" /> : profile.hasApiKey ? <button className="button profile-switch" disabled={c.disabled || !state.codexInstalled || !state.encryptionAvailable} onClick={() => c.confirm({ kind: 'switch', id: profile.id, name: profile.name })}>{c.busy === `switch:${profile.id}` ? <LoaderCircle size={13} className="spin" /> : null}{c.busy === `switch:${profile.id}` ? t('switching') : t('switch')}<ArrowRight size={14} /></button> : <button className="button profile-setup" disabled={c.disabled || allApiActive} onClick={() => openManager(profile.id)}>{t('setUp')}<ChevronRight size={14} /></button>}</div>
+          </section>)}
+        </div>
+      </section>}
+      <button className="add-profile-panel" disabled={c.disabled || allApiActive} onClick={() => openManager('new')}><Plus size={16} /><span>{t('addProfile')}</span><span className="add-profile-brands">GLM / Kimi / API</span></button>
+      {!state.codexInstalled && <button className="setup-note" disabled={c.disabled} onClick={() => openManager('general')}><CircleAlert size={15} /><span>{t('appMissing')}</span><ChevronRight size={14} /></button>}
       <p className="switch-explainer"><RefreshCw size={13} /><span>{t('switchInfo')}</span></p>
       <div className="quick-actions"><button className="quick-action" disabled={c.disabled || !state.codexInstalled} onClick={() => c.confirm({ kind: 'restart' })}>{c.busy === 'restart' ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />}<span>{c.busy === 'restart' ? t('restarting') : t('restart')}</span></button><span className="action-divider" /><button className="quick-action" disabled={c.disabled} onClick={() => void c.run('folder', () => api!.openConfigFolder())}><FolderOpen size={15} /><span>{t('openConfig')}</span></button></div>
       {switched && <p className="last-switch">{t('lastSwitched')} <span>{switched}</span></p>}
@@ -203,7 +227,7 @@ function Manager({ controller: c }: { controller: Controller }) {
   return <div className="manager-layout">
     <aside className="manager-sidebar">
       <div className="sidebar-heading"><h1>{t('manager')}</h1><p>{t('managerSubtitle')}</p></div>
-      <button className="button add-profile-sidebar" disabled={!!c.busy} onClick={() => select('new')}><Plus size={15} />{t('addProfile')}</button>
+      <button className="button add-profile-sidebar" disabled={!!c.busy || state.activeProfile === ALL_API_PROFILE_ID} onClick={() => select('new')}><Plus size={15} />{t('addProfile')}</button>
       <div className="sidebar-section-label">{t('apiProfiles')}<span>{profiles.length}</span></div>
       <nav className="profile-navigation" aria-label={t('apiProfiles')}>{profiles.map((profile) => <button key={profile.id} className={selection === profile.id ? 'selected' : ''} disabled={!!c.busy} onClick={() => select(profile.id)}><ProviderIcon preset={profile.preset} small /><span><strong>{profile.name}</strong><small>{host(profile.baseUrl)}</small></span>{state.activeProfile === profile.id && <span className="sidebar-active-dot" title={t('current')} />}</button>)}</nav>
       <button className={`general-navigation ${selection === 'general' ? 'selected' : ''}`} disabled={!!c.busy} onClick={() => select('general')}><Settings2 size={16} />{t('general')}<ChevronRight size={13} /></button>
@@ -237,7 +261,8 @@ function ProfileEditor({ profile, controller: c, onDirty, onSaved, onDeleted }: 
   const [connection, setConnection] = useState<ConnectionResult | null>(null);
   const dirty = JSON.stringify(draft) !== baseline || !!key || clearKey;
   const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
-  const active = Boolean(profile && state.activeProfile === profile.id);
+  const allApiActive = state.activeProfile === ALL_API_PROFILE_ID;
+  const active = allApiActive || state.activeProfile === profile?.id;
   const models = modelIds(draft.modelsText);
   const reasoningModel = models.includes(reasoningModelChoice) ? reasoningModelChoice : draft.defaultModel || models[0] || '';
   const selectedEfforts = Object.hasOwn(draft.reasoningEfforts, reasoningModel) ? draft.reasoningEfforts[reasoningModel] ?? [] : [];
@@ -293,14 +318,14 @@ function ProfileEditor({ profile, controller: c, onDirty, onSaved, onDeleted }: 
   return <section className="editor-column">
     <div className="editor-scroll">
       <div className="editor-heading"><div><div className="eyebrow">{profile ? t('editProfile') : t('essentials')}</div><h1>{profile?.name ?? t('newProfile')}</h1><p>{t('essentialsHint')}</p></div>{state.encryptionAvailable && <span className="security-badge"><ShieldCheck size={12} />{t('encrypted')}</span>}</div>
-      {active && <div className="active-settings-note"><CircleAlert size={15} /><div><span>{t('activeLocked')}</span><button className="text-button" disabled={c.disabled || !state.codexInstalled} onClick={() => c.confirm({ kind: 'switch', id: 'chatgpt', name: 'ChatGPT' })}>{t('switchChatgpt')}<ArrowRight size={12} /></button></div></div>}
+      {active && <div className="active-settings-note"><CircleAlert size={15} /><div><span>{t(allApiActive ? 'allApisLocked' : 'activeLocked')}</span><button className="text-button" disabled={c.disabled || !state.codexInstalled} onClick={() => c.confirm({ kind: 'switch', id: 'chatgpt', name: 'ChatGPT' })}>{t('switchChatgpt')}<ArrowRight size={12} /></button></div></div>}
       <div className="field preset-field"><label>{t('provider')}</label><div className="provider-templates">{PROVIDER_PRESETS.map((template) => <button key={template.preset} className={draft.preset === template.preset ? 'selected' : ''} disabled={!!c.busy || active} onClick={() => chooseTemplate(template.preset)}><ProviderIcon preset={template.preset} small /><span>{template.name || t('custom')}</span>{draft.preset === template.preset && <Check size={12} />}</button>)}</div><p className="field-hint">{t('templateHint')}</p></div>
       <section className="settings-section connection-section">
         <div className="field"><label htmlFor="profile-name">{t('name')}<span className="optional-label">{t('optional')}</span></label><input id="profile-name" value={draft.name} maxLength={80} placeholder={t('namePlaceholder')} onChange={(event) => setField('name', event.target.value)} disabled={!!c.busy || active} /></div>
         <div className="field"><label htmlFor="base-url">{t('baseUrl')}</label><input id="base-url" type="url" spellCheck={false} value={draft.baseUrl} placeholder={t('baseUrlPlaceholder')} onChange={(event) => setField('baseUrl', event.target.value)} disabled={!!c.busy || active} /></div>
         <div className="field"><div className="field-label"><label htmlFor="api-key">{t('apiKey')}</label>{profile?.hasApiKey && !clearKey && <span className="saved-key-label"><Check size={11} />{t('keySaved')}</span>}</div><div className="input-wrap"><input id="api-key" type={showKey ? 'text' : 'password'} value={key} autoComplete="off" spellCheck={false} placeholder={profile?.hasApiKey && !clearKey ? t('keyStoredPlaceholder') : t('apiKeyPlaceholder')} onChange={(event) => { setKey(event.target.value); setConnection(null); if (event.target.value) setClearKey(false); }} disabled={!!c.busy || active} /><button type="button" className="input-action" aria-label={t(showKey ? 'hideKey' : 'showKey')} title={t(showKey ? 'hideKey' : 'showKey')} onClick={() => setShowKey(!showKey)} disabled={active}>{showKey ? <EyeOff size={15} /> : <Eye size={15} />}</button></div>{clearKey ? <p className="field-hint key-removal">{t('removePending')}<button onClick={() => setClearKey(false)}>{t('undo')}</button></p> : profile?.hasApiKey && <div className="key-hint-row"><span className="field-hint">{t('savedKeyHint')}</span><button className="text-button danger-text" disabled={!!c.busy || active} onClick={() => { setClearKey(true); setKey(''); setConnection(null); }}><Trash2 size={11} />{t('removeKey')}</button></div>}</div>
         {!state.encryptionAvailable && <p className="field-warning"><CircleAlert size={13} />{t('noEncryption')}</p>}
-        <div className="discovery-row"><button className="button secondary test-button" disabled={c.disabled || !draft.baseUrl.trim() || !keyAvailable} onClick={() => void discovered()}>{c.busy === 'test' ? <LoaderCircle size={14} className="spin" /> : <Zap size={14} />}{c.busy === 'test' ? t('testing') : t('test')}</button><span>{models.length ? t('modelsCount', { count: models.length }) : t('discoveryHint')}</span></div>
+        <div className="discovery-row"><button className="button secondary test-button" disabled={c.disabled || allApiActive || !draft.baseUrl.trim() || !keyAvailable} onClick={() => void discovered()}>{c.busy === 'test' ? <LoaderCircle size={14} className="spin" /> : <Zap size={14} />}{c.busy === 'test' ? t('testing') : t('test')}</button><span>{models.length ? t('modelsCount', { count: models.length }) : t('discoveryHint')}</span></div>
         {connection && <div className={`connection-result ${connection.ok ? 'success' : 'error'}`} role={connection.ok ? 'status' : 'alert'}>{connection.ok ? <CircleCheck size={14} /> : <CircleAlert size={14} />}<span>{t(connection.ok ? 'testOk' : 'testFailed')}{connection.ok && connection.models?.length ? ` · ${t('discovered', { count: connection.models.length })}` : ''}<small>{connection.latencyMs} ms</small>{!connection.ok && <span className="connection-error">{friendlyError(connection.error, state.settings.language)}</span>}</span></div>}
         {models.length > 0 && <div className="discovered-models">{models.slice(0, 6).map((model) => <span key={model}><CircleDot size={9} />{model}</span>)}{models.length > 6 && <span>+{models.length - 6}</span>}</div>}
       </section>
@@ -456,7 +481,8 @@ function ConfirmDialog({ value, t, onCancel, onConfirm }: { value: Confirmation;
   }, [onCancel]);
   const title = value.kind === 'switch' ? t('switchTitle', { name: value.name }) : value.kind === 'delete' ? t('deleteTitle', { name: value.profile.name }) : t(value.kind === 'restart' ? 'restartTitle' : value.kind === 'quit' ? 'quitTitle' : 'discardTitle');
   const description = t(value.kind === 'switch' ? 'switchWarning' : value.kind === 'delete' ? 'deleteWarning' : value.kind === 'restart' ? 'restartWarning' : value.kind === 'quit' ? 'quitWarning' : 'discardWarning');
-  return <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onCancel(); }}><div className="confirmation-modal" ref={dialog} role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-description"><div className="modal-icon">{value.kind === 'delete' ? <Trash2 size={22} /> : value.kind === 'quit' ? <Power size={22} /> : <RefreshCw size={22} />}</div><h2 id="confirmation-title">{title}</h2><p id="confirmation-description">{description}</p>{value.kind === 'switch' && <p className="modal-detail">{value.id === 'chatgpt' ? t('switchNative') : t('switchApi', { name: value.name })}</p>}<div className="modal-actions"><button ref={cancel} className="button secondary" onClick={onCancel}>{t('cancel')}</button><button className={`button ${value.kind === 'delete' ? 'danger' : 'primary'}`} onClick={onConfirm}>{t(value.kind === 'switch' ? 'confirmSwitch' : value.kind === 'delete' ? 'confirmDelete' : value.kind === 'restart' ? 'confirmRestart' : value.kind === 'discard' ? 'discard' : 'quit')}<ArrowRight size={14} /></button></div></div></div>;
+  const switchDetail = value.kind === 'switch' && t(value.id === ALL_API_PROFILE_ID ? 'switchAllApis' : value.id === 'chatgpt' ? 'switchNative' : 'switchApi', { name: value.name });
+  return <div className="modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onCancel(); }}><div className="confirmation-modal" ref={dialog} role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-description"><div className="modal-icon">{value.kind === 'delete' ? <Trash2 size={22} /> : value.kind === 'quit' ? <Power size={22} /> : <RefreshCw size={22} />}</div><h2 id="confirmation-title">{title}</h2><p id="confirmation-description">{description}</p>{switchDetail && <p className="modal-detail">{switchDetail}</p>}<div className="modal-actions"><button ref={cancel} className="button secondary" onClick={onCancel}>{t('cancel')}</button><button className={`button ${value.kind === 'delete' ? 'danger' : 'primary'}`} onClick={onConfirm}>{t(value.kind === 'switch' ? 'confirmSwitch' : value.kind === 'delete' ? 'confirmDelete' : value.kind === 'restart' ? 'confirmRestart' : value.kind === 'discard' ? 'discard' : 'quit')}<ArrowRight size={14} /></button></div></div></div>;
 }
 
 export default App;

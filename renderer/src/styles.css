@@ -68,8 +68,8 @@ h1, h2, h3, p { margin: 0; }
 .status-dot { width: 4px; height: 4px; border-radius: 100%; background: currentColor; }
 .section-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 11px; }
 .section-heading h2 { font-weight: 500; font-size: 9px; color: #93909f; letter-spacing: 1.6px; }
-.profile-count { color: #65616f; font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace; font-size: 9px; letter-spacing: 1px; }
 .profile-list { display: flex; flex-direction: column; gap: 12px; }
+.individual-profiles { margin-top: 20px; }
 .profile-card { background: #1e2027; border: 1px solid #30313d; border-radius: 11px; padding: 16px 17px 12px; position: relative; }
 .profile-card.is-active { border-color: #7c6aab; background: linear-gradient(115deg, #25222f, #22232b); box-shadow: inset 0 0 0 1px #bd9fff06, 0 3px 10px #0001; }
 .profile-topline { display: flex; align-items: center; gap: 11px; }

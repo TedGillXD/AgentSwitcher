@@ -204,9 +204,13 @@ jobs:
           cat > release-notes.md <<'NOTES'
           Windows 和 macOS 安装包 / Windows and macOS installers.
 
-          v0.2.9 修复自定义模型在 Codex 中缺少思考强度选项的问题。自定义 API、GLM 和 Kimi 配置可在“高级选项 → 支持的思考强度”中按模型勾选服务商支持的档位。保存并切换到该配置后，可在 Codex 中调整思考强度。
+          v0.3.0 新增「全部第三方 API」。在 AgentSwitcher 里可以切换 ChatGPT 个人订阅和第三方 API 聚合模式。进入聚合模式后，Codex 的模型菜单会列出各套已保存密钥的 API 模型。可以直接选模型，AgentSwitcher 会按配置转发请求并保留模型的思考强度选项。同名模型会标注配置名称。
 
-          v0.2.9 restores reasoning effort options in Codex for custom models. In Advanced options → Supported reasoning efforts, select the levels your provider supports for each model in a Custom API, GLM, or Kimi profile. Save and switch to that profile to adjust reasoning effort in Codex.
+          v0.3.0 adds All third-party APIs. Switch between your personal ChatGPT subscription and the combined API mode in AgentSwitcher. In combined mode, choose a model from any configuration with a saved key in Codex. AgentSwitcher routes requests to the selected configuration and preserves each model's reasoning options. Models with the same name are labeled by configuration.
+
+          订阅与 API 模式之间切换会重启 Codex。第三方模式内换模型可直接用 Codex 的菜单。跨服务商时建议新建聊天。需要继续原有聊天时，可以切回原来的单独配置。
+
+          Switching between subscription and API modes restarts Codex. Within combined mode, select another model in Codex. Start a new chat when moving between providers. Switch back to a standalone configuration to continue chats created with it.
 
           - Windows x64: Intel / AMD PC；Windows arm64: ARM PC。
           - macOS x64: Intel Mac；macOS arm64: Apple Silicon (M1 及更新)。

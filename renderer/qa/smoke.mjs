@@ -106,7 +106,7 @@ try {
     }
     if (method === 'saveSettings') { state.settings = input; await broadcast(); return snapshot(); }
     if (method === 'saveProfile') {
-      if (input.id === state.activeProfile) throw new Error('PROFILE_IN_USE');
+      if (input.id === state.activeProfile || state.activeProfile === 'all-api') throw new Error('PROFILE_IN_USE');
       const ids = input.modelIds?.length ? input.modelIds : discovered(input.baseUrl);
       if (!ids.length) throw new Error('MODELS_REQUIRED');
       const id = input.id || `new-${nextId++}`;
@@ -118,7 +118,7 @@ try {
       await broadcast(); return snapshot();
     }
     if (method === 'deleteProfile') {
-      if (input === state.activeProfile) throw new Error('PROFILE_IN_USE');
+      if (input === state.activeProfile || state.activeProfile === 'all-api') throw new Error('PROFILE_IN_USE');
       state.profiles = state.profiles.filter((profile) => profile.id !== input); keys.delete(input);
       await broadcast(); return snapshot();
     }
@@ -128,6 +128,7 @@ try {
     }
     if (method === 'switchProfile') {
       if (failSwitch) { failSwitch = false; throw new Error('APP_STOP_FAILED'); }
+      if (input === 'all-api' && !state.profiles.some((profile) => profile.hasApiKey)) throw new Error('API_KEY_REQUIRED');
       state = { ...state, activeProfile: input, bridgeRunning: input !== 'chatgpt', lastSwitchedAt: new Date().toISOString() };
       await broadcast(); return { state: snapshot(), restarted: true };
     }
@@ -148,7 +149,9 @@ try {
   });
   await panel.reload();
   await expect(panel.getByText('浏览器预览', { exact: true })).toHaveCount(0);
-  await expect(panel.locator('.profile-card')).toHaveCount(4);
+  await expect(panel.locator('.profile-card')).toHaveCount(5);
+  await expect(panel.getByRole('heading', { name: '全部第三方 API', exact: true })).toBeVisible();
+  await expect(panel.getByText('可用配置 · 3', { exact: true })).toBeVisible();
   await expect(panel.locator('.switch-explainer')).toContainText('请在新聊天中使用目标配置；已有聊天保留原服务商。');
   await panel.screenshot({ path: path.join(output, 'profiles-zh.png') });
   await panel.getByRole('button', { name: '管理配置', exact: true }).click();
@@ -168,7 +171,7 @@ try {
   await manager.getByRole('button', { name: '保存配置', exact: true }).click();
   await expect(manager.getByText('配置已保存。', { exact: true })).toBeVisible();
   await expect(manager.getByLabel('API Key', { exact: true })).toHaveValue('');
-  await expect(panel.locator('.profile-card')).toHaveCount(5);
+  await expect(panel.locator('.profile-card')).toHaveCount(6);
   expect(state.profiles.at(-1).modelIds).toEqual(['glm-5.3', 'glm-5.2']);
   expect(state.profiles.at(-1).defaultModel).toBe('glm-5.2');
   await manager.getByLabel('配置名称', { exact: false }).fill('GLM Team');
@@ -191,6 +194,7 @@ try {
   await manager.getByRole('button', { name: '保存配置', exact: true }).click();
   await expect(manager.getByText('配置已保存。', { exact: true })).toBeVisible();
   expect(state.profiles.at(-1).hasApiKey).toBe(false);
+  await expect(panel.getByText('可用配置 · 4', { exact: true })).toBeVisible();
   expect(calls.filter((call) => call.method === 'saveProfile').at(-1).input.clearApiKey).toBe(true);
   await manager.getByLabel('API Key', { exact: true }).fill('replacement-test-key');
   await manager.getByRole('button', { name: '保存配置', exact: true }).click();
@@ -261,6 +265,28 @@ try {
   await manager.getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(manager.getByText('Configuration deleted.', { exact: true })).toBeVisible();
   expect(state.profiles.some((profile) => profile.name === 'GLM Team')).toBe(false);
+
+  // The aggregate mode keeps individual profiles accessible and read-only.
+  const allApisCard = panel.locator('.profile-card').filter({ has: panel.getByRole('heading', { name: 'All third-party APIs', exact: true }) });
+  await expect(allApisCard.getByText('Available configurations · 5', { exact: true })).toBeVisible();
+  await allApisCard.getByRole('button', { name: 'Switch', exact: true }).click();
+  await expect(panel.getByRole('alertdialog')).toContainText('Start a new chat when changing providers');
+  await panel.getByRole('button', { name: 'Switch & restart', exact: true }).click();
+  await expect(allApisCard.getByText('Active', { exact: true })).toBeVisible();
+  await expect(allApisCard.locator('.profile-edit')).toHaveCount(0);
+  await expect(panel.getByText('Local connection active', { exact: true })).toBeVisible();
+  expect(calls.filter((call) => call.method === 'switchProfile').at(-1).input).toBe('all-api');
+  expect(state.profiles.some((profile) => profile.id === 'all-api')).toBe(false);
+  await expect(panel.locator('.add-profile-panel')).toBeDisabled();
+  await panel.getByRole('button', { name: 'View DeepSeek', exact: true }).click();
+  await expect(manager.getByText(/All third-party APIs are active/)).toBeVisible();
+  await expect(manager.getByLabel('API base URL', { exact: true })).toBeDisabled();
+  await expect(manager.getByRole('button', { name: 'Add configuration', exact: true })).toBeDisabled();
+  await expect(manager.getByRole('button', { name: 'Delete configuration', exact: true })).toBeDisabled();
+  await manager.getByRole('button', { name: 'Switch to ChatGPT', exact: true }).click();
+  await manager.getByRole('button', { name: 'Switch & restart', exact: true }).click();
+  await expect(manager.getByLabel('API base URL', { exact: true })).toBeEnabled();
+  await expect(panel.getByText('Local connection active', { exact: true })).toHaveCount(0);
 
   // Switch confirmations, localized failures, and active-profile edit locks.
   const deepseekCard = panel.locator('.profile-card').filter({ has: panel.getByRole('heading', { name: 'DeepSeek', exact: true }) });

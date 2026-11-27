@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { LocalBridge, type BridgeOptions } from '../electron/bridge';
+import { LocalBridge, type SingleBridgeOptions } from '../electron/bridge';
 import { listenOnLoopback } from '../electron/bridge/listen';
 
 const apiKey = 'sk-provider-credential-not-for-codex';
@@ -15,7 +15,7 @@ async function upstream(handler: (request: IncomingMessage, response: ServerResp
   return `http://127.0.0.1:${port}/provider/v1`;
 }
 
-async function proxy(baseUrl: string, overrides: Partial<BridgeOptions> = {}): Promise<string> {
+async function proxy(baseUrl: string, overrides: Partial<SingleBridgeOptions> = {}): Promise<string> {
   const bridge = new LocalBridge();
   bridges.push(bridge);
   const { port } = await bridge.start({ apiKey, token, baseUrl, model: 'custom-code', models: ['custom-code', 'custom-fast'], protocol: 'chat_completions', ...overrides });

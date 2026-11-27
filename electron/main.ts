@@ -7,6 +7,7 @@ import { CodexProcess } from './platform/codex-process';
 import { ProfileService } from './service';
 import { defaultSettings, LocalStore } from './store';
 import { AppError, errorCode } from './errors';
+import { ALL_API_PROFILE_ID } from '../shared/models';
 import type { AppState, Result, UpdateState, View } from '../shared/types';
 import { version as packageVersion } from '../package.json';
 import { getPanelBounds } from './panel-position';
@@ -240,12 +241,16 @@ function updateTray(state: AppState): void {
   if (!tray) return;
   const isZh = state.settings.language === 'zh-CN';
   const text = (cn: string, en: string) => isZh ? cn : en;
-  const activeName = state.profiles.find(profile => profile.id === state.activeProfile)?.name;
+  const allApiName = text('全部第三方 API', 'All third-party APIs');
+  const activeName = state.activeProfile === ALL_API_PROFILE_ID ? allApiName : state.profiles.find(profile => profile.id === state.activeProfile)?.name;
   tray.setToolTip(`AgentSwitcher · ${activeName ?? (state.activeProfile === 'chatgpt' ? 'ChatGPT' : text('其他配置', 'Other profile'))}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: text('打开 AgentSwitcher', 'Open AgentSwitcher'), click: () => showPanel() },
     { type: 'separator' },
     { label: 'ChatGPT', type: 'radio', checked: state.activeProfile === 'chatgpt', enabled: !service?.isBusy, click: () => runBackground(() => traySwitch('chatgpt')) },
+    { label: allApiName, type: 'radio', checked: state.activeProfile === ALL_API_PROFILE_ID,
+      enabled: state.profiles.some(profile => profile.hasApiKey) && state.encryptionAvailable && !service?.isBusy,
+      click: () => runBackground(() => traySwitch(ALL_API_PROFILE_ID)) },
     ...state.profiles.map(profile => ({ label: profile.name.replace(/&/g, '&&'), type: 'radio' as const,
       checked: state.activeProfile === profile.id, enabled: profile.hasApiKey && state.encryptionAvailable && !service?.isBusy,
       click: () => runBackground(() => traySwitch(profile.id)) })),
