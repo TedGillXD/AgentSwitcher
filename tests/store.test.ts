@@ -393,6 +393,8 @@ describe('API profile validation', () => {
     ['glm', { protocol: 'anthropic' }], ['glm', { preset: 'unknown' }],
     ['glm', { modelIds: [] }], ['glm', { modelIds: ['model\nmalicious'] }],
     ['glm', { defaultModel: 'not-in-list' }], ['glm', { apiKey: 'key\r\nheader' }],
+    ['glm', { reasoningEfforts: [] }], ['glm', { reasoningEfforts: { 'glm-fixture': 'high' } }],
+    ['glm', { reasoningEfforts: { 'glm-fixture': ['unsupported'] } }],
   ])('rejects invalid profile id=%s metadata=%j', (id, patch) => {
     expect(() => validateProfile({ ...apiProfile(), ...patch } as SaveProfileInput, id)).toThrow('INVALID_PROFILE');
   });

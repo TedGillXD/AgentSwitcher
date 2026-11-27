@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import type { ApiProfileConfig, Settings, SaveProfileInput, SaveSettingsInput } from '../shared/types';
-import { availableDeepseekModels } from '../shared/models';
+import { availableDeepseekModels, REASONING_EFFORTS, type ReasoningEffort } from '../shared/models';
 import { normalizeProviderBaseUrl } from '../shared/provider-url';
 import { AppError } from './errors';
 import { atomicWrite, readOptional } from './files';
@@ -56,6 +56,21 @@ export function legacyDeepseekProfile(settings: Settings): ApiProfileConfig {
   };
 }
 
+function validateReasoningEfforts(input: unknown, modelIds: string[]): ApiProfileConfig['reasoningEfforts'] {
+  if (input === undefined) return undefined;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new AppError('INVALID_PROFILE');
+  const models = new Set(modelIds);
+  const entries = Object.entries(input);
+  if (entries.length > models.size) throw new AppError('INVALID_PROFILE');
+  const supported: [string, ReasoningEffort[]][] = [];
+  for (const [model, efforts] of entries) {
+    if (!models.has(model) || !Array.isArray(efforts) || efforts.length > REASONING_EFFORTS.length ||
+        efforts.some((effort) => !REASONING_EFFORTS.includes(effort))) throw new AppError('INVALID_PROFILE');
+    if (efforts.length) supported.push([model, REASONING_EFFORTS.filter((effort) => efforts.includes(effort))]);
+  }
+  return supported.length ? Object.fromEntries(supported) : undefined;
+}
+
 export function validateProfile(input: SaveProfileInput, id: string): ApiProfileConfig {
   const validId = /^[a-z][a-z0-9_-]{0,63}$/;
   const modelId = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
@@ -71,7 +86,11 @@ export function validateProfile(input: SaveProfileInput, id: string): ApiProfile
   const modelIds = [...new Set(supplied)];
   const defaultModel = input.defaultModel ?? modelIds[0]!;
   if (typeof defaultModel !== 'string' || !modelId.test(defaultModel) || !modelIds.includes(defaultModel)) throw new AppError('INVALID_PROFILE');
-  return { id, name: input.name.trim(), preset: input.preset, baseUrl: validateBaseUrl(input.baseUrl), protocol: input.protocol, modelIds, defaultModel };
+  const reasoningEfforts = validateReasoningEfforts(input.reasoningEfforts, modelIds);
+  return {
+    id, name: input.name.trim(), preset: input.preset, baseUrl: validateBaseUrl(input.baseUrl), protocol: input.protocol,
+    modelIds, defaultModel, ...(reasoningEfforts && input.preset !== 'deepseek' ? { reasoningEfforts } : {}),
+  };
 }
 
 function validateProfiles(profiles: ApiProfileConfig[]): ApiProfileConfig[] {

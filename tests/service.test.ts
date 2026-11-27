@@ -1178,6 +1178,55 @@ describe('ProfileService switching between API configurations', () => {
 });
 
 describe('ProfileService remembers each API model selection', () => {
+  it('publishes per-model reasoning efforts and restores a supported choice after reloading', async () => {
+    const f = await fixture();
+    const profile = await createProfile(f, { reasoningEfforts: { 'example-pro': ['high', 'medium', 'low'] } });
+    await f.service.switchProfile(profile.id);
+    const config = parse(await readConfig(f.configPath));
+    expect(config).toMatchObject({ model: 'example-pro', model_reasoning_effort: 'medium' });
+    const catalogPath = catalogFile(f.settings.codexHome, profile.id);
+    expect(config.model_catalog_json).toBe(catalogPath);
+    expect(JSON.parse(await readConfig(catalogPath)).models).toMatchObject([
+      {
+        slug: 'example-pro', default_reasoning_level: 'medium',
+        supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }, { effort: 'high' }],
+      },
+      { slug: 'example-fast', default_reasoning_level: null, supported_reasoning_levels: [] },
+    ]);
+
+    await selectModel(f, 'example-pro', 'high');
+    await f.service.switchProfile('chatgpt');
+    const reloadedStore = new LocalStore(f.storePath, codec, f.settings);
+    await reloadedStore.load();
+    const reloadedService = new ProfileService({ store: reloadedStore, processes: f.processes, bridge: f.bridge, version: 'test' });
+    await reloadedService.initialize();
+    const edited = await reloadedService.saveProfile({ ...profile, name: 'Renamed API', reasoningEfforts: undefined });
+    expect(edited.profiles.find((item) => item.id === profile.id)?.reasoningEfforts).toEqual({ 'example-pro': ['low', 'medium', 'high'] });
+    await reloadedService.switchProfile(profile.id);
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: 'example-pro', model_reasoning_effort: 'high' });
+  });
+
+  it('falls back when a remembered effort is removed and stops publishing levels when cleared', async () => {
+    const f = await fixture();
+    const profile = await createProfile(f, { reasoningEfforts: { 'example-fast': ['medium', 'high'] } });
+    await f.service.switchProfile(profile.id);
+    await selectModel(f, 'example-fast', 'high');
+    await f.service.switchProfile('chatgpt');
+    await f.service.saveProfile({ ...profile, reasoningEfforts: { 'example-fast': ['xhigh', 'low'] } });
+    await f.service.switchProfile(profile.id);
+    expect(parse(await readConfig(f.configPath))).toMatchObject({ model: 'example-fast', model_reasoning_effort: 'low' });
+
+    await f.service.switchProfile('chatgpt');
+    await f.service.saveProfile({ ...profile, reasoningEfforts: {} });
+    await f.service.switchProfile(profile.id);
+    const config = parse(await readConfig(f.configPath));
+    expect(config.model).toBe('example-fast');
+    expect(config.model_reasoning_effort).toBeUndefined();
+    const catalogPath = catalogFile(f.settings.codexHome, profile.id);
+    const models = JSON.parse(await readConfig(catalogPath)).models as { slug: string }[];
+    expect(models.find((model) => model.slug === 'example-fast')).toMatchObject({ default_reasoning_level: null, supported_reasoning_levels: [] });
+  });
+
   it('restores the last DeepSeek model and effort after a ChatGPT round trip and app restart', async () => {
     const f = await fixture();
     await f.service.switchProfile('deepseek');

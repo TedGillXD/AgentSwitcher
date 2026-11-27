@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from './models';
+
 export type Language = 'zh-CN' | 'en';
 export type ProfileId = string;
 export type View = 'profiles' | 'settings';
@@ -12,6 +14,8 @@ export interface ApiProfileConfig {
   protocol: ApiProtocol;
   modelIds: string[];
   defaultModel: string;
+  /** Supported Codex reasoning levels keyed by model ID. */
+  reasoningEfforts?: Partial<Record<string, ReasoningEffort[]>>;
 }
 
 export interface ApiProfile extends ApiProfileConfig { hasApiKey: boolean }
@@ -25,6 +29,8 @@ export interface SaveProfileInput {
   /** Omit to discover models using the API URL and key. */
   modelIds?: string[];
   defaultModel?: string;
+  /** Omit to keep existing levels, or pass an empty object to clear them. */
+  reasoningEfforts?: ApiProfileConfig['reasoningEfforts'];
   apiKey?: string;
   clearApiKey?: boolean;
 }

@@ -5,6 +5,7 @@ import {
   LockKeyhole, Pencil, Plus, Power, RefreshCw, Settings2, ShieldCheck, Sparkles,
   Terminal, Trash2, X, Zap,
 } from 'lucide-react';
+import { REASONING_EFFORTS, type ReasoningEffort } from '../../shared/models';
 import type { ApiProfile, ApiProtocol, AppState, ConnectionResult, Language, ProviderPreset, SaveProfileInput, Settings, UpdateState } from '../../shared/types';
 import { PROVIDER_PRESETS } from '../../shared/provider-presets';
 import { translator, type Translate } from './i18n';
@@ -214,9 +215,13 @@ function Manager({ controller: c }: { controller: Controller }) {
 
 interface ProfileDraft {
   name: string; preset: ProviderPreset; baseUrl: string; protocol: ApiProtocol; modelsText: string; defaultModel: string;
+  reasoningEfforts: NonNullable<ApiProfile['reasoningEfforts']>;
 }
 function profileDraft(profile?: ApiProfile): ProfileDraft {
-  return profile ? { name: profile.name, preset: profile.preset, baseUrl: profile.baseUrl, protocol: profile.protocol, modelsText: profile.modelIds.join('\n'), defaultModel: profile.defaultModel } : { name: '', preset: 'custom', baseUrl: '', protocol: 'auto', modelsText: '', defaultModel: '' };
+  return profile ? {
+    name: profile.name, preset: profile.preset, baseUrl: profile.baseUrl, protocol: profile.protocol,
+    modelsText: profile.modelIds.join('\n'), defaultModel: profile.defaultModel, reasoningEfforts: profile.reasoningEfforts ?? {},
+  } : { name: '', preset: 'custom', baseUrl: '', protocol: 'auto', modelsText: '', defaultModel: '', reasoningEfforts: {} };
 }
 function modelIds(text: string): string[] { return [...new Set(text.split(/[\s,]+/).map((model) => model.trim()).filter(Boolean))]; }
 
@@ -228,11 +233,14 @@ function ProfileEditor({ profile, controller: c, onDirty, onSaved, onDeleted }: 
   const [showKey, setShowKey] = useState(false);
   const [clearKey, setClearKey] = useState(false);
   const [advanced, setAdvanced] = useState(false);
+  const [reasoningModelChoice, setReasoningModelChoice] = useState('');
   const [connection, setConnection] = useState<ConnectionResult | null>(null);
   const dirty = JSON.stringify(draft) !== baseline || !!key || clearKey;
   const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   const active = Boolean(profile && state.activeProfile === profile.id);
   const models = modelIds(draft.modelsText);
+  const reasoningModel = models.includes(reasoningModelChoice) ? reasoningModelChoice : draft.defaultModel || models[0] || '';
+  const selectedEfforts = Object.hasOwn(draft.reasoningEfforts, reasoningModel) ? draft.reasoningEfforts[reasoningModel] ?? [] : [];
   const keyAvailable = Boolean(key.trim() || profile?.hasApiKey && !clearKey);
   const valid = !!draft.baseUrl.trim() && (keyAvailable || !!profile && clearKey) && state.encryptionAvailable;
   useEffect(() => { onDirty(dirty); }, [dirty, onDirty]);
@@ -244,8 +252,16 @@ function ProfileEditor({ profile, controller: c, onDirty, onSaved, onDeleted }: 
   const setField = <K extends keyof ProfileDraft>(name: K, value: ProfileDraft[K]) => { setDraft((old) => ({ ...old, [name]: value })); if (name === 'baseUrl' || name === 'protocol') setConnection(null); };
   const chooseTemplate = (preset: ProviderPreset) => {
     const template = PROVIDER_PRESETS.find((entry) => entry.preset === preset)!;
-    setDraft({ name: template.name, preset, baseUrl: template.baseUrl, protocol: template.protocol, modelsText: '', defaultModel: '' });
+    setDraft({ name: template.name, preset, baseUrl: template.baseUrl, protocol: template.protocol, modelsText: '', defaultModel: '', reasoningEfforts: {} });
+    setReasoningModelChoice('');
     setConnection(null);
+  };
+  const setReasoningEffort = (effort: ReasoningEffort, enabled: boolean) => {
+    const efforts = REASONING_EFFORTS.filter((level) => level === effort ? enabled : selectedEfforts.includes(level));
+    const reasoningEfforts = { ...draft.reasoningEfforts };
+    if (efforts.length) reasoningEfforts[reasoningModel] = efforts;
+    else delete reasoningEfforts[reasoningModel];
+    setField('reasoningEfforts', reasoningEfforts);
   };
   const discovered = async () => c.run('test', async () => {
     const result = await api!.testConnection({ profileId: profile?.id, apiKey: key.trim() || undefined, baseUrl: draft.baseUrl.trim(), protocol: draft.protocol });
@@ -258,7 +274,14 @@ function ProfileEditor({ profile, controller: c, onDirty, onSaved, onDeleted }: 
   });
   const save = async () => c.run('save-profile', async () => {
     const name = draft.name.trim() || PROVIDER_PRESETS.find((item) => item.preset === draft.preset)?.name || host(draft.baseUrl);
-    const input: SaveProfileInput = { id: profile?.id, name, preset: draft.preset, baseUrl: draft.baseUrl.trim(), protocol: draft.protocol, modelIds: models.length ? models : undefined, defaultModel: draft.defaultModel || undefined, apiKey: key.trim() || undefined, clearApiKey: clearKey && !key.trim() };
+    const input: SaveProfileInput = {
+      id: profile?.id, name, preset: draft.preset, baseUrl: draft.baseUrl.trim(), protocol: draft.protocol,
+      modelIds: models.length ? models : undefined, defaultModel: draft.defaultModel || undefined,
+      apiKey: key.trim() || undefined, clearApiKey: clearKey && !key.trim(),
+    };
+    if (draft.preset !== 'deepseek') {
+      input.reasoningEfforts = Object.fromEntries(Object.entries(draft.reasoningEfforts).filter(([model]) => models.includes(model)));
+    }
     try {
       const next = await api!.saveProfile(input);
       c.setState(next); setKey(''); setShowKey(false); setClearKey(false); setConnection(null);
@@ -285,6 +308,22 @@ function ProfileEditor({ profile, controller: c, onDirty, onSaved, onDeleted }: 
         <div className="field"><label htmlFor="protocol">{t('protocol')}</label><select id="protocol" value={draft.protocol} onChange={(event) => setField('protocol', event.target.value as ApiProtocol)} disabled={!!c.busy || active}><option value="auto">{t('protocolAuto')}</option><option value="responses">{t('protocolResponses')}</option><option value="chat_completions">{t('protocolChat')}</option></select><p className="field-hint">{t('protocolHint')}</p></div>
         <div className="field"><label htmlFor="model-ids">{t('models')}</label><textarea id="model-ids" value={draft.modelsText} spellCheck={false} placeholder={t('modelsPlaceholder')} onChange={(event) => { const ids = modelIds(event.target.value); setDraft((old) => ({ ...old, modelsText: event.target.value, defaultModel: ids.includes(old.defaultModel) ? old.defaultModel : '' })); }} disabled={!!c.busy || active} rows={4} /><p className="field-hint">{t('modelsHint')}</p></div>
         <div className="field"><label htmlFor="default-model">{t('defaultModel')}</label><select id="default-model" value={draft.defaultModel} disabled={!!c.busy || active || !models.length} onChange={(event) => setField('defaultModel', event.target.value)}><option value="">{t('automaticDefault')}</option>{models.map((model) => <option key={model} value={model}>{model}</option>)}</select><p className="field-hint">{t('defaultHint')}</p></div>
+        {draft.preset !== 'deepseek' && <fieldset className="reasoning-settings" disabled={!!c.busy || active}>
+          <legend>{t('reasoningEfforts')}</legend>
+          {reasoningModel ? <>
+            <div className="field">
+              <label htmlFor="reasoning-model">{t('reasoningModel')}</label>
+              <select id="reasoning-model" value={reasoningModel} onChange={(event) => setReasoningModelChoice(event.target.value)}>
+                {models.map((model) => <option key={model} value={model}>{model}</option>)}
+              </select>
+            </div>
+            <div className="reasoning-choices">{REASONING_EFFORTS.map((effort) => <label key={effort}>
+              <input type="checkbox" checked={selectedEfforts.includes(effort)} onChange={(event) => setReasoningEffort(effort, event.target.checked)} />
+              {t(`reasoningEffort_${effort}`)}
+            </label>)}</div>
+            <p className="field-hint">{t('reasoningEffortsHint')}</p>
+          </> : <p className="field-hint">{t('reasoningModelsHint')}</p>}
+        </fieldset>}
       </div>}</section>
       <p className="security-note"><LockKeyhole size={13} />{t('securityNote')}</p>
     </div>

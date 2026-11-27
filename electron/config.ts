@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { parse } from 'smol-toml';
 import { parseTOML, type AST } from 'toml-eslint-parser';
 import type { ApiProfileConfig, ProfileId } from '../shared/types';
-import { availableDeepseekModels } from '../shared/models';
+import { availableDeepseekModels, profileModelReasoning, REASONING_EFFORTS } from '../shared/models';
 import { AppError } from './errors';
 import type { ConfigSnapshot, ModelSelection } from './store';
 
@@ -172,19 +172,23 @@ export function apiConfig(text: string, home: string, port: number, token: strin
   // A removed model (or a different Codex home) must not revive stale choices.
   const saved = selection?.home === resolve(home) &&
     (selection.model === null || profile.modelIds.includes(selection.model)) ? selection : undefined;
+  const model = saved?.model ?? profile.defaultModel;
+  const { efforts, defaultEffort } = profileModelReasoning(profile, model);
+  const savedEffort = saved?.reasoningEffort;
+  const effort = savedEffort === undefined || (savedEffort !== null && profile.preset !== 'deepseek' &&
+    efforts.length > 0 && !efforts.some((level) => level === savedEffort)) ? defaultEffort : savedEffort;
   return patchValues(text, {
-    model: JSON.stringify(saved?.model ?? profile.defaultModel), model_provider: JSON.stringify(providerId), profile: null,
+    model: JSON.stringify(model), model_provider: JSON.stringify(providerId), profile: null,
     preferred_auth_method: '"apikey"',
     // Custom provider auth is supplied by the local proxy. Do not force an API login,
     // which could log out the user's existing ChatGPT credential cache.
     forced_login_method: null,
     model_catalog_json: JSON.stringify(catalogFile(home, profile.id)),
-    model_reasoning_effort: saved ? (saved.reasoningEffort === null ? null : JSON.stringify(saved.reasoningEffort)) :
-      profile.preset === 'deepseek' ? '"high"' : null,
+    model_reasoning_effort: effort === null ? null : JSON.stringify(effort),
     model_reasoning_summary: '"none"',
     model_context_window: null, model_auto_compact_token_limit: null,
     web_search: '"disabled"', service_tier: null,
-    [DESKTOP_EFFORTS]: '["low", "medium", "high", "xhigh", "ultra", "max"]',
+    [DESKTOP_EFFORTS]: JSON.stringify(REASONING_EFFORTS),
     [`${provider}.name`]: JSON.stringify(`${profile.name} · AgentSwitcher`),
     [`${provider}.base_url`]: JSON.stringify(`http://127.0.0.1:${port}/v1`),
     [`${provider}.wire_api`]: '"responses"',

@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { ApiProfileConfig, AppState, ConnectionInput, ConnectionResult, ProfileId, SaveProfileInput, SaveSettingsInput, SwitchResult } from '../shared/types';
 import { PROVIDER_PRESETS } from '../shared/provider-presets';
-import { availableDeepseekModels } from '../shared/models';
+import { availableDeepseekModels, profileModelReasoning } from '../shared/models';
 import { activeProfile, apiConfig, catalogFile, chatgptConfig, configHash, managedEndpoint, snapshotConfig, snapshotModelSelection, usesManagedCatalog } from './config';
 import { profileModelCatalog } from './catalog';
 import { AppError, errorCode } from './errors';
@@ -21,6 +21,11 @@ export interface ServiceOptions {
   platform?: string;
   onChange?: (state: AppState) => void;
   onLoginPreference?: (enabled: boolean) => void;
+}
+
+function retainReasoningEfforts(reasoningEfforts: ApiProfileConfig['reasoningEfforts'], modelIds: string[]): ApiProfileConfig['reasoningEfforts'] {
+  if (!reasoningEfforts) return undefined;
+  return Object.fromEntries(Object.entries(reasoningEfforts).filter(([id]) => modelIds.includes(id)));
 }
 
 export class ProfileService {
@@ -150,9 +155,10 @@ export class ProfileService {
           secrets.apiKey = input.apiKey.trim();
           if (secrets.apiKeys?.deepseek) secrets.apiKeys.deepseek = input.apiKey.trim();
         }
+        const modelIds = availableDeepseekModels(settings.deepseekModel);
         profiles = profiles.map((profile) => profile.id === 'deepseek' ? {
           ...profile, baseUrl: settings.deepseekBaseUrl, defaultModel: settings.deepseekModel,
-          modelIds: availableDeepseekModels(settings.deepseekModel),
+          modelIds, reasoningEfforts: retainReasoningEfforts(profile.reasoningEfforts, modelIds),
         } : profile);
       }
       if (settings.launchAtLogin !== previous.launchAtLogin) this.options.onLoginPreference?.(settings.launchAtLogin);
@@ -190,8 +196,19 @@ export class ProfileService {
       const preferred = input.defaultModel || existing?.defaultModel || PROVIDER_PRESETS.find((p) => p.preset === input.preset)?.defaultModel;
       const defaultModel = input.defaultModel || (preferred && modelIds?.includes(preferred) ? preferred : modelIds?.[0]);
       const name = input.name?.trim() || PROVIDER_PRESETS.find((p) => p.preset === input.preset)?.name || new URL(baseUrl).hostname;
-      const profile = validateProfile({ ...input, name, baseUrl, modelIds, defaultModel }, id);
-      if (existing && profile.defaultModel !== existing.defaultModel && secrets.profileSelections) delete secrets.profileSelections[id];
+      const reasoningEfforts = input.reasoningEfforts === undefined && existing && existing.preset === input.preset ?
+        retainReasoningEfforts(existing.reasoningEfforts, modelIds ?? []) : input.reasoningEfforts;
+      const profile = validateProfile({ ...input, name, baseUrl, modelIds, defaultModel, reasoningEfforts }, id);
+      const selection = secrets.profileSelections?.[id];
+      if (existing && secrets.profileSelections && profile.defaultModel !== existing.defaultModel) {
+        delete secrets.profileSelections[id];
+      } else if (existing && selection) {
+        const model = selection.model ?? profile.defaultModel;
+        const previous = profileModelReasoning(existing, model).defaultEffort;
+        const current = profileModelReasoning(profile, model).defaultEffort;
+        if (previous !== null && current === null) selection.reasoningEffort = null;
+        if (previous === null && current !== null) selection.reasoningEffort ??= current;
+      }
       if (apiKey) {
         if (id === 'deepseek') { secrets.apiKey = apiKey; if (secrets.apiKeys?.deepseek) secrets.apiKeys.deepseek = apiKey; }
         else secrets.apiKeys = { ...secrets.apiKeys, [id]: apiKey };

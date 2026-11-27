@@ -80,6 +80,7 @@ describe('LocalBridge credential proxy', () => {
       model: 'deepseek-v4-pro',
       input: [{ type: 'function_call_output', call_id: 'call_1', output: '42' }],
       tools: [{ type: 'custom', name: 'apply_patch' }],
+      reasoning: { effort: 'max' },
       stream: false,
     };
     const result = await post(url, payload, { 'X-Codex-Account-ID': 'must-not-leave-the-computer' });

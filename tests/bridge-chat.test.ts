@@ -74,11 +74,12 @@ describe('generic provider Chat Completions bridge', () => {
     const url = await proxy(baseUrl);
     const response = await post(url, {
       model: 'custom-fast', instructions: 'Be helpful', stream: false, max_output_tokens: 123, temperature: 0.5,
+      reasoning: { effort: 'high' },
       input: [{ role: 'developer', content: [{ type: 'input_text', text: 'Project rules' }] },
         { role: 'user', content: [{ type: 'input_text', text: 'Explain' }, { type: 'input_image', image_url: 'data:image/png;base64,AAAA', detail: 'low' }] }],
     });
     expect(response.status).toBe(200);
-    expect(received).toMatchObject({ model: 'custom-fast', stream: false, max_tokens: 123, temperature: 0.5, messages: [
+    expect(received).toMatchObject({ model: 'custom-fast', stream: false, max_tokens: 123, temperature: 0.5, reasoning_effort: 'high', messages: [
       { role: 'system', content: 'Be helpful' }, { role: 'system', content: [{ type: 'text', text: 'Project rules' }] },
       { role: 'user', content: [{ type: 'text', text: 'Explain' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA', detail: 'low' } }] },
     ] });

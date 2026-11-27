@@ -329,6 +329,13 @@ h1, h2, h3, p { margin: 0; }
 .advanced-toggle > svg:last-child { transition: transform .15s; }
 .advanced-section.open .advanced-toggle > svg:last-child { transform: rotate(180deg); }
 .advanced-body { padding: 18px 20px 20px; background: #1b1822; border-top: 1px solid #352d3d; }
+.reasoning-settings { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
+.reasoning-settings legend { padding: 0; margin-bottom: 8px; font-size: 11px; font-weight: 550; color: #c3b6d0; }
+.reasoning-settings .field { margin-bottom: 8px; }
+.reasoning-choices { display: flex; flex-wrap: wrap; gap: 5px 14px; }
+.reasoning-choices label { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; color: #aaa5b6; font-size: 11px; }
+.reasoning-choices input { margin: 0; accent-color: #b49bd8; color-scheme: dark; }
+.reasoning-choices input:disabled { opacity: .6; }
 .manager-shell .security-note { font-size: 9px; margin: 17px 1px 0; color: #756781; }
 .editor-save-bar { display: flex; align-items: center; justify-content: space-between; gap: 15px; min-height: 69px; flex-shrink: 0; border-top: 1px solid #342c3e; background: #1a1720; padding: 14px 36px; }
 .editor-save-bar > .save-status { margin-left: auto; }

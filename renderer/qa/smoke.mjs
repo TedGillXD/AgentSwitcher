@@ -112,7 +112,8 @@ try {
       const id = input.id || `new-${nextId++}`;
       const previous = state.profiles.find((profile) => profile.id === id);
       if (input.apiKey) keys.set(id, input.apiKey); else if (input.clearApiKey) keys.delete(id);
-      const value = { ...previous, id, name: input.name, preset: input.preset, baseUrl: input.baseUrl.replace(/\/+$/, ''), protocol: input.protocol, modelIds: ids, defaultModel: input.defaultModel || ids[0], hasApiKey: keys.has(id) };
+      const reasoningEfforts = Object.keys(input.reasoningEfforts ?? {}).length ? input.reasoningEfforts : undefined;
+      const value = { ...previous, id, name: input.name, preset: input.preset, baseUrl: input.baseUrl.replace(/\/+$/, ''), protocol: input.protocol, modelIds: ids, defaultModel: input.defaultModel || ids[0], reasoningEfforts, hasApiKey: keys.has(id) };
       state.profiles = previous ? state.profiles.map((profile) => profile.id === id ? value : profile) : [...state.profiles, value];
       await broadcast(); return snapshot();
     }
@@ -195,6 +196,34 @@ try {
   await manager.getByRole('button', { name: '保存配置', exact: true }).click();
   await expect(manager.getByLabel('API Key', { exact: true })).toHaveValue('');
   expect(state.profiles.at(-1).hasApiKey).toBe(true);
+
+  // Reasoning levels are saved per model and cleared for removed models.
+  await manager.getByRole('button', { name: '高级选项', exact: true }).click();
+  const reasoning = manager.getByRole('group', { name: '支持的思考强度', exact: true });
+  const reasoningModel = reasoning.getByLabel('模型', { exact: true });
+  await expect(reasoningModel).toHaveValue('model-flash');
+  await reasoning.getByRole('checkbox', { name: '低', exact: true }).check();
+  await reasoningModel.selectOption('model-pro');
+  await expect(reasoning.getByRole('checkbox', { name: '低', exact: true })).not.toBeChecked();
+  await reasoning.getByRole('checkbox', { name: '中', exact: true }).check();
+  await reasoning.getByRole('checkbox', { name: '高', exact: true }).check();
+  await manager.getByRole('button', { name: '保存配置', exact: true }).click();
+  await expect.poll(() => state.profiles.at(-1).reasoningEfforts).toEqual({ 'model-flash': ['low'], 'model-pro': ['medium', 'high'] });
+  await expect(manager.getByRole('button', { name: '保存配置', exact: true })).toBeDisabled();
+  await noOverflow(manager);
+  await selectSidebar('Kimi');
+  await selectSidebar('custom.example');
+  await manager.getByRole('button', { name: '高级选项', exact: true }).click();
+  await expect(reasoning.getByRole('checkbox', { name: '低', exact: true })).toBeChecked();
+  await reasoningModel.selectOption('model-pro');
+  await expect(reasoning.getByRole('checkbox', { name: '中', exact: true })).toBeChecked();
+  await expect(reasoning.getByRole('checkbox', { name: '高', exact: true })).toBeChecked();
+  await manager.getByLabel('可用模型', { exact: true }).fill('model-pro');
+  await reasoning.getByRole('checkbox', { name: '中', exact: true }).uncheck();
+  await reasoning.getByRole('checkbox', { name: '高', exact: true }).uncheck();
+  await manager.getByRole('button', { name: '保存配置', exact: true }).click();
+  await expect.poll(() => state.profiles.at(-1).reasoningEfforts).toBeUndefined();
+  expect(calls.filter((call) => call.method === 'saveProfile').at(-1).input.reasoningEfforts).toEqual({});
 
   // Unsupported discovery has an actionable manual fallback.
   await manager.getByRole('button', { name: '添加配置', exact: true }).click();
