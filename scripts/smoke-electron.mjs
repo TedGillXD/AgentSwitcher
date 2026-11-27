@@ -22,6 +22,9 @@ await writeFile(join(dataDirectory, 'settings.json'), JSON.stringify({
     deepseekBaseUrl: 'https://api.deepseek.com', deepseekModel: 'deepseek-flash',
     launchAtLogin: false, hideOnBlur: true },
 }));
+const usageTotals = { requests: 2, inputTokens: 700, outputTokens: 120, cachedInputTokens: 200, cacheReportedInputTokens: 500 };
+const usageModels = [{ profileId: 'deepseek', model: 'deepseek-flash', ...usageTotals }];
+await writeFile(join(dataDirectory, 'usage.json'), JSON.stringify({ version: 1, models: usageModels }));
 await mkdir('test-results', { recursive: true });
 const environment = { ...process.env, AGENT_SWITCHER_USER_DATA: dataDirectory, CODEX_HOME: codexHome };
 delete environment.ELECTRON_RUN_AS_NODE;
@@ -82,6 +85,9 @@ try {
   expect(initial.encryptionAvailable).toBe(true);
   expect(initial.codexInstalled).toBe(false);
   expect(initial.settings.hideOnBlur).toBe(false);
+  // Manual workflow dispatch can use these checks with a historical app tag.
+  const usage = await page.evaluate(() => window.agentSwitcher.getUsageStats?.());
+  if (usage) expect(usage).toEqual({ ...usageTotals, models: usageModels });
   expect(await page.evaluate(() => typeof require)).toBe('undefined');
   expect(await page.evaluate(() => typeof process)).toBe('undefined');
   // Capture this isolated app's tray, then emit clicks without moving the real mouse.

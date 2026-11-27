@@ -67,7 +67,7 @@ export class ProfileService {
       for (const { upstreamId } of codexApiProfile(profile).models) {
         const slug = `${profile.id}/${upstreamId}`;
         models.push({ slug, upstreamId, profile });
-        routes.push({ slug, upstreamModel: upstreamId, baseUrl: profile.baseUrl, apiKey, protocol: profile.protocol });
+        routes.push({ slug, upstreamModel: upstreamId, baseUrl: profile.baseUrl, apiKey, protocol: profile.protocol, profileId: profile.id });
       }
     }
     if (!routes.length) throw new AppError('API_KEY_REQUIRED');
@@ -82,7 +82,7 @@ export class ProfileService {
     const { profile } = target;
     const apiKey = profileApiKey(secrets, profile.id);
     if (!apiKey) throw new AppError('API_KEY_REQUIRED');
-    return { port, token, apiKey, baseUrl: profile.baseUrl, model: profile.defaultModel, models: profile.modelIds, protocol: profile.protocol };
+    return { port, token, apiKey, baseUrl: profile.baseUrl, model: profile.defaultModel, models: profile.modelIds, protocol: profile.protocol, usageProfileId: profile.id };
   }
   private async writeCatalog(profile: CodexApiProfile): Promise<void> {
     await atomicWrite(catalogFile(this.options.store.settings.codexHome, profile.id), codexModelCatalog(profile));

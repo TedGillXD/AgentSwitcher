@@ -548,6 +548,7 @@ describe('ProfileService recovery and settings', () => {
       port: 41987, token: LOCAL_TOKEN, apiKey: API_KEY,
       baseUrl: f.settings.deepseekBaseUrl, model: 'deepseek-flash',
       models: ['deepseek-flash', 'deepseek-v4-pro'], protocol: 'responses',
+      usageProfileId: 'deepseek',
     });
     expect((await f.service.getState()).bridgeRunning).toBe(true);
   });
@@ -670,6 +671,7 @@ describe('ProfileService managed model catalog upgrades', () => {
         port: 41987, token: LOCAL_TOKEN, apiKey: API_KEY,
         baseUrl: settings.deepseekBaseUrl, model: defaultModel,
         models: ['deepseek-flash', 'deepseek-v4-pro'], protocol: 'responses',
+        usageProfileId: 'deepseek',
       });
       expect((await f.service.getState()).lastError).toBeNull();
     },
@@ -1052,7 +1054,7 @@ describe('ProfileService switching between API configurations', () => {
     expect(parse(secondConfig).model_catalog_json).toBe(catalogFile(f.settings.codexHome, second.id));
     expect(await readConfig(catalogFile(f.settings.codexHome, first.id))).toBe(firstCatalog);
     expect(JSON.parse(await readConfig(catalogFile(f.settings.codexHome, second.id))).models.map((model: { slug: string }) => model.slug)).toEqual(['second-model']);
-    expect(f.bridge.start).toHaveBeenLastCalledWith({ port: firstEndpoint.port, token: secondEndpoint.token, apiKey: 'sk-second-only', baseUrl: second.baseUrl, model: 'second-model', models: ['second-model'], protocol: 'chat_completions' });
+    expect(f.bridge.start).toHaveBeenLastCalledWith({ port: firstEndpoint.port, token: secondEndpoint.token, apiKey: 'sk-second-only', baseUrl: second.baseUrl, model: 'second-model', models: ['second-model'], protocol: 'chat_completions', usageProfileId: second.id });
     expect(secondConfig).not.toContain('sk-first-only');
     expect(secondConfig).not.toContain('sk-second-only');
 
@@ -1116,6 +1118,7 @@ describe('ProfileService switching between API configurations', () => {
     expect(f.bridge.start).toHaveBeenCalledExactlyOnceWith({
       port: endpoint.port, token: endpoint.token, apiKey: 'sk-custom-resume', baseUrl: profile.baseUrl,
       model: profile.defaultModel, models: profile.modelIds, protocol: profile.protocol,
+      usageProfileId: profile.id,
     });
     expect(JSON.parse(await readConfig(catalogFile(f.settings.codexHome, profile.id))).models[0].slug).toBe(profile.defaultModel);
     expect(await readConfig(f.configPath)).toBe(written);
@@ -1375,8 +1378,8 @@ describe('ProfileService aggregate API mode', () => {
     const routing = {
       model: firstModel, continuationKey,
       routes: [
-        { slug: firstModel, upstreamModel: 'shared-model', baseUrl: first.baseUrl, apiKey: firstKey, protocol: 'responses' },
-        { slug: secondModel, upstreamModel: 'shared-model', baseUrl: second.baseUrl, apiKey: secondKey, protocol: 'chat_completions' },
+        { slug: firstModel, upstreamModel: 'shared-model', baseUrl: first.baseUrl, apiKey: firstKey, protocol: 'responses', profileId: first.id },
+        { slug: secondModel, upstreamModel: 'shared-model', baseUrl: second.baseUrl, apiKey: secondKey, protocol: 'chat_completions', profileId: second.id },
       ],
     };
     expect(f.bridge.start).toHaveBeenLastCalledWith(expect.objectContaining(routing));

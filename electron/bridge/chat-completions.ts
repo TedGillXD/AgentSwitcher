@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import type { ServerResponse } from 'node:http';
 import { BridgeRequestError } from './errors';
+import { chatUsage, type UsageObserver } from './usage';
 
 type ObjectValue = Record<string, unknown>;
 type ToolDefinition = { name: string; namespace?: string; custom: boolean };
@@ -261,7 +262,7 @@ async function* chatChunks(body: ReadableStream<Uint8Array>): AsyncGenerator<unk
 }
 
 /** Produce Responses events Codex can consume, with stable item IDs and indexes. */
-export async function streamChatResponse(body: ReadableStream<Uint8Array>, request: ChatRequest, response: ServerResponse, signal: AbortSignal): Promise<void> {
+export async function streamChatResponse(body: ReadableStream<Uint8Array>, request: ChatRequest, response: ServerResponse, signal: AbortSignal, observeUsage?: UsageObserver): Promise<void> {
   let sequence = 0;
   const envelope = responseEnvelope(request);
   const output: ObjectValue[] = [];
@@ -284,12 +285,15 @@ export async function streamChatResponse(body: ReadableStream<Uint8Array>, reque
     for await (const chunk of chatChunks(body)) {
       if (!object(chunk) || chunk.error || !Array.isArray(chunk.choices) || chunk.choices.length > 1) malformed();
       if (chunk.usage) envelope.usage = usage(chunk.usage);
-      if (chunk.choices.length === 0) continue;
+      if (chunk.choices.length === 0) { observeUsage?.(chatUsage(chunk)); continue; }
       const choice: unknown = chunk.choices[0];
       if (!object(choice) || !object(choice.delta)) malformed();
       const delta = choice.delta;
       if ((delta.content !== undefined && delta.content !== null && typeof delta.content !== 'string') || delta.audio || delta.function_call) malformed();
-      if (choice.finish_reason !== null && choice.finish_reason !== undefined) finishReason = choice.finish_reason;
+      if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
+        finishReason = choice.finish_reason;
+        observeUsage?.(chatUsage(chunk));
+      }
       if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
         if (!reasoning) {
           reasoningIndex = output.length;

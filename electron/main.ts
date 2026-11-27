@@ -6,6 +6,7 @@ import { LocalBridge } from './bridge';
 import { CodexProcess } from './platform/codex-process';
 import { ProfileService } from './service';
 import { defaultSettings, LocalStore } from './store';
+import { UsageStore } from './usage';
 import { AppError, errorCode } from './errors';
 import { ALL_API_PROFILE_ID } from '../shared/models';
 import type { AppState, Result, UpdateState, View } from '../shared/types';
@@ -30,6 +31,7 @@ const trustedWindows = new Map<number, string>();
 let tray: Tray | null = null;
 let service: ProfileService | null = null;
 let store: LocalStore | null = null;
+let usageStore: UsageStore | null = null;
 let updater: AppUpdater | null = null;
 let exiting = false;
 let quitRequest: Promise<void> | null = null;
@@ -40,7 +42,7 @@ let refreshTimer: ReturnType<typeof setInterval> | null = null;
 interface PanelAnchor { point: Electron.Point; trayBounds?: Electron.Rectangle }
 let lastPanelAnchor: PanelAnchor | null = null;
 let panelDisplayId: number | null = null;
-const bridge = new LocalBridge();
+const bridge = new LocalBridge((sample) => usageStore?.record(sample));
 const developmentUrl = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined;
 const rendererUrl = developmentUrl ?? pathToFileURL(join(mainDirectory, '../renderer/index.html')).href;
 
@@ -203,6 +205,8 @@ function beginExit(): void {
     app.once('will-quit', () => clearTimeout(deadline));
     void bridge.stop().catch((error) => {
       console.error(`AgentSwitcher shutdown: ${errorCode(error)}`);
+    }).then(() => usageStore?.flush()).catch((error) => {
+      console.error(`AgentSwitcher usage: ${errorCode(error)}`);
     }).finally(() => app.quit());
   });
 }
@@ -315,6 +319,10 @@ function registerIpc(): void {
     if (initialError) state.lastError = initialError;
     return state;
   });
+  handle('switcher:usage-stats', () => {
+    if (!usageStore) throw new AppError('USAGE_STATS_READ_FAILED');
+    return usageStore.getStats();
+  });
   handle('switcher:save', (input) => ready().saveSettings(input));
   handle('switcher:save-profile', (input) => ready().saveProfile(input));
   handle('switcher:delete-profile', (id) => ready().deleteProfile(id));
@@ -387,6 +395,8 @@ if (hasLock) app.whenReady().then(async () => {
   };
   store = new LocalStore(join(app.getPath('userData'), 'settings.json'), codec, defaultSettings());
   try { await store.load(); } catch (error) { initialError = errorCode(error); }
+  usageStore = new UsageStore(join(app.getPath('userData'), 'usage.json'));
+  await usageStore.load().catch((error) => console.error(`AgentSwitcher usage: ${errorCode(error)}`));
   service = new ProfileService({
     store, bridge, processes: new CodexProcess(), version: app.isPackaged ? app.getVersion() : packageVersion,
     onChange: (state) => {

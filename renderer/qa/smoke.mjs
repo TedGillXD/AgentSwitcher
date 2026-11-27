@@ -19,6 +19,7 @@ const calls = [];
 const requestOverrides = new Map();
 let failSwitch = false;
 let nextId = 1;
+let usageStats = { requests: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheReportedInputTokens: 0, models: [] };
 const profiles = [
   { id: 'deepseek', name: 'DeepSeek', preset: 'deepseek', baseUrl: 'https://api.deepseek.com', protocol: 'auto', modelIds: ['deepseek-flash', 'deepseek-v4-pro'], defaultModel: 'deepseek-flash', hasApiKey: true },
   { id: 'glm-personal', name: 'GLM · 个人', preset: 'glm', baseUrl: 'https://open.bigmodel.cn/api/v1', protocol: 'auto', modelIds: ['glm-5.3'], defaultModel: 'glm-5.3', hasApiKey: true },
@@ -91,6 +92,7 @@ try {
     const override = requestOverrides.get(page)?.[method];
     if (override) return override(input);
     if (method === 'getState') return snapshot();
+    if (method === 'getUsageStats') return structuredClone(usageStats);
     if (method === 'getUpdateState') return updateSnapshot();
     if (method === 'checkForUpdates') return broadcastUpdate({ status: 'up-to-date', latestVersion: state.version, error: null });
     if (method === 'downloadUpdate') return broadcastUpdate({ status: 'downloaded', error: null });
@@ -146,6 +148,7 @@ try {
     window.agentSwitcher.onEditProfile = (callback) => { window.__editListeners.push(callback); return () => { window.__editListeners = window.__editListeners.filter((listener) => listener !== callback); }; };
     window.agentSwitcher.onUpdateStateChanged = (callback) => { window.__updateListeners.push(callback); return () => { window.__updateListeners = window.__updateListeners.filter((listener) => listener !== callback); }; };
     window.agentSwitcher.onNavigate = () => () => {};
+    window.agentSwitcher.getUsageStats = invoke('getUsageStats');
   });
   await panel.reload();
   await expect(panel.getByText('浏览器预览', { exact: true })).toHaveCount(0);
@@ -265,6 +268,47 @@ try {
   await manager.getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(manager.getByText('Configuration deleted.', { exact: true })).toBeVisible();
   expect(state.profiles.some((profile) => profile.name === 'GLM Team')).toBe(false);
+
+  // API usage shows local totals, model breakdown, cache coverage and refresh feedback.
+  let resolveUsage;
+  const pendingUsage = new Promise((resolve) => { resolveUsage = resolve; });
+  requestOverrides.set(manager, { getUsageStats: () => pendingUsage });
+  await manager.getByRole('button', { name: 'API usage', exact: true }).click();
+  await expect(manager.getByRole('heading', { name: 'API usage', exact: true })).toBeVisible();
+  const refreshUsage = manager.getByRole('button', { name: 'Refresh usage', exact: true });
+  await expect(refreshUsage).toBeDisabled();
+  await expect(manager.getByText('Loading API usage…', { exact: true })).toBeVisible();
+  resolveUsage(usageStats);
+  requestOverrides.delete(manager);
+  await expect(manager.getByText('No API token usage has been recorded yet.', { exact: true })).toBeVisible();
+  usageStats = {
+    requests: 3, inputTokens: 2400, outputTokens: 300, cachedInputTokens: 400, cacheReportedInputTokens: 1000,
+    models: [
+      { profileId: 'deepseek', model: 'deepseek-flash', requests: 2, inputTokens: 1000, outputTokens: 200, cachedInputTokens: 400, cacheReportedInputTokens: 1000 },
+      { profileId: 'removed-profile', model: 'partner-chat-model', requests: 1, inputTokens: 1400, outputTokens: 100, cachedInputTokens: 0, cacheReportedInputTokens: 0 },
+    ],
+  };
+  await refreshUsage.click();
+  const usageTotals = manager.locator('.usage-totals');
+  await expect(usageTotals).toContainText('2,400');
+  await expect(usageTotals).toContainText('2,700');
+  await expect(usageTotals).toContainText('40%');
+  await expect(usageTotals).toContainText('400 of 1,000 input tokens cached');
+  const usageTable = manager.getByRole('table', { name: 'Usage by model and configuration' });
+  const deepseekUsage = usageTable.getByRole('row', { name: /deepseek-flash DeepSeek/ });
+  await expect(deepseekUsage).toContainText('40%');
+  await expect(deepseekUsage).toContainText('1,200');
+  await expect(usageTable.getByRole('row', { name: /partner-chat-model Deleted configuration/ })).toContainText('No data');
+  await manager.setViewportSize({ width: 800, height: 620 });
+  await noOverflow(manager);
+  await manager.setViewportSize({ width: 960, height: 760 });
+  requestOverrides.set(manager, { getUsageStats: () => { throw new Error('USAGE_STATS_READ_FAILED'); } });
+  await refreshUsage.click();
+  await expect(manager.getByRole('alert')).toHaveText('Could not read local API usage.');
+  await expect(usageTotals).toContainText('2,400');
+  requestOverrides.delete(manager);
+  await refreshUsage.click();
+  await expect(manager.getByRole('alert')).toHaveCount(0);
 
   // The aggregate mode keeps individual profiles accessible and read-only.
   const allApisCard = panel.locator('.profile-card').filter({ has: panel.getByRole('heading', { name: 'All third-party APIs', exact: true }) });

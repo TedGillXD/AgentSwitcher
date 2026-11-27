@@ -89,6 +89,32 @@ export interface ConnectionResult {
   models?: string[];
 }
 
+export interface ApiUsageSample {
+  profileId: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number | null;
+}
+
+export interface ApiUsageTotals {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  /** Input tokens from requests that explicitly reported a cached-token count. */
+  cacheReportedInputTokens: number;
+}
+
+export interface ApiModelUsage extends ApiUsageTotals {
+  profileId: string;
+  model: string;
+}
+
+export interface ApiUsageStats extends ApiUsageTotals {
+  models: ApiModelUsage[];
+}
+
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'error' | 'unsupported';
@@ -108,6 +134,7 @@ export interface UpdateState {
 
 export interface AgentSwitcherApi {
   getState(): Promise<AppState>;
+  getUsageStats(): Promise<ApiUsageStats>;
   saveSettings(input: SaveSettingsInput): Promise<AppState>;
   saveProfile(input: SaveProfileInput): Promise<AppState>;
   deleteProfile(id: string): Promise<AppState>;

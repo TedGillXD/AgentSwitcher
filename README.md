@@ -20,6 +20,7 @@ macOS 安装包要求 macOS 13 或更新版本，同时提供 ZIP 包。安装�
 - 主面板和托盘可切换 ChatGPT 个人订阅、全部第三方 API 或任一单独配置。进入聚合模式后，可以直接在 Codex 的模型菜单中切换各套 API 的模型。
 - 独立的配置管理窗口，支持新增、编辑、删除配置。内置 DeepSeek、GLM、Kimi 模板，也支持自定义名称、API 地址和 API Key。
 - 自动读取服务商模型列表，每套配置可选择多个模型和默认模型；高级选项可以手动填写模型及接口协议。
+- 在「管理配置 → API 用量」查看第三方配置及模型的累计 token 数和缓存命中率。单独配置和聚合模式共用统计。
 - 密钥由 Windows DPAPI / macOS Keychain 提供的 Electron `safeStorage` 加密，仅存本机；不会返回给界面，不写入 `localStorage` 或 Codex 配置。
 - 简体中文 / English，语言持久化；支持开机启动和托盘菜单切换。Windows 面板靠近托盘、macOS 面板位于菜单栏图标下方，支持多屏及不同缩放比例。
 - 在“通用设置 → 应用更新”手动检查 GitHub 最新正式版，跟随系统代理（含 PAC）下载对应系统与架构的安装包，校验 SHA-256 后安装更新并重启。0.2.4 / 0.2.5 如出现浏览器能下载、应用内下载失败，请先从发布页手动安装新版一次。
@@ -69,6 +70,8 @@ pnpm dist:mac             # macOS Intel + Apple Silicon DMG / ZIP
 选择「全部第三方 API」可汇总所有已保存密钥的配置。Codex 以「模型名 · 配置名」显示模型，按各套配置的地址、密钥、协议和思考强度发送请求。在聚合模式内换模型无需重启。若在同一聊天中改选另一家服务商，新服务商会收到该聊天的可用上下文。需要隔离上下文时，请新建聊天。
 
 自定义 API、GLM 和 Kimi 可在“高级选项”的“支持的思考强度”中按模型勾选服务商支持的档位。保存并切换到该配置后，可在 Codex 的模型菜单中选择档位。
+
+API 用量从 v0.3.1 开始按服务商返回的数据累计，仅在本地保存模型、配置标识和用量计数。缓存命中率等于命中的输入 token 数除以明确报告缓存用量的输入 token 数。缺少缓存数据的请求仍计入总 token 用量。ChatGPT 订阅用量由 ChatGPT 管理。
 
 默认使用 `$CODEX_HOME`，否则使用 `~/.codex`。全局配置也会影响共用此目录的 CLI / IDE。程序不会修改 `auth.json`，也不会读取或重写操作系统中的 Codex 登录凭证。切换到 ChatGPT 会设置 `forced_login_method = "chatgpt"`，避免静默使用 OpenAI API 计费。
 
@@ -124,5 +127,7 @@ Run `pnpm install && pnpm dev`. Build with `pnpm build`, run tests with `pnpm te
 Use a new chat after switching providers. On macOS, changing configurations automatically opens a new chat; on other platforms, create one manually. A normal restart does not open a new chat. Existing chats retain their saved `model_provider`, so a ChatGPT chat can still use `openai` after the global model changes to DeepSeek. This mismatch causes errors such as `The 'deepseek-flash' model is not supported when using Codex with a ChatGPT account.` Switch back to the original configuration to continue an earlier chat. There is no need to delete `auth.json`, sign out, or edit chat history; AgentSwitcher leaves them intact.
 
 The loopback proxy forwards native Responses API requests or adapts them to OpenAI-compatible Chat Completions. Automatic model discovery uses `/models`; custom services without discovery require manual model IDs. Your actual key is never written to Codex configuration or renderer storage. There is no AgentSwitcher cloud service. Platform login, real provider inference and signed distribution require acceptance testing on each target OS.
+
+Open Manage configurations → API usage to see cumulative third-party tokens by configuration and model. Local tracking starts with v0.3.1. The cache hit rate divides cached input tokens by input tokens from requests that reported a cache count. ChatGPT manages subscription usage separately.
 
 Version 0.2.8 fixes local validation rejecting explicitly entered `http://` intranet API URLs before a request was sent. HTTP and HTTPS now work consistently for validation, model discovery, saving and reloading profiles, and proxy forwarding. URLs with embedded credentials, query parameters or fragments remain rejected, and requests do not follow redirects. Prefer HTTPS; HTTP sends API keys and request content in plaintext and should only be used on trusted networks.

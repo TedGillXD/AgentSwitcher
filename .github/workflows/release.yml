@@ -204,13 +204,11 @@ jobs:
           cat > release-notes.md <<'NOTES'
           Windows 和 macOS 安装包 / Windows and macOS installers.
 
-          v0.3.0 新增「全部第三方 API」。在 AgentSwitcher 里可以切换 ChatGPT 个人订阅和第三方 API 聚合模式。进入聚合模式后，Codex 的模型菜单会列出各套已保存密钥的 API 模型。可以直接选模型，AgentSwitcher 会按配置转发请求并保留模型的思考强度选项。同名模型会标注配置名称。
+          v0.3.1 新增第三方 API 用量。打开「管理配置 → API 用量」，可以查看按配置和模型累计的输入、输出、总 token 数，以及按服务商返回的数据计算的缓存命中率。单独配置和聚合模式的用量会记到实际使用的配置。
 
-          v0.3.0 adds All third-party APIs. Switch between your personal ChatGPT subscription and the combined API mode in AgentSwitcher. In combined mode, choose a model from any configuration with a saved key in Codex. AgentSwitcher routes requests to the selected configuration and preserves each model's reasoning options. Models with the same name are labeled by configuration.
+          用量从升级后开始在本机累计。缓存命中率只计算明确报告缓存用量的请求。ChatGPT 订阅用量由 ChatGPT 管理。
 
-          订阅与 API 模式之间切换会重启 Codex。第三方模式内换模型可直接用 Codex 的菜单。跨服务商时建议新建聊天。需要继续原有聊天时，可以切回原来的单独配置。
-
-          Switching between subscription and API modes restarts Codex. Within combined mode, select another model in Codex. Start a new chat when moving between providers. Switch back to a standalone configuration to continue chats created with it.
+          v0.3.1 adds third-party API usage under Manage configurations → API usage. See cumulative input, output and total tokens, plus cache hit rates calculated from provider-reported cache counts. Usage from standalone and combined modes is attributed to the configuration and model that handled the request. Local tracking starts after upgrading. Cache rates use only requests with reported cache counts. ChatGPT manages subscription usage separately.
 
           - Windows x64: Intel / AMD PC；Windows arm64: ARM PC。
           - macOS x64: Intel Mac；macOS arm64: Apple Silicon (M1 及更新)。

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ArrowRight, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, CircleCheck,
+  ArrowRight, ChartNoAxesColumn, Check, CheckCheck, ChevronDown, ChevronRight, CircleAlert, CircleCheck,
   CircleDot, Download, Ellipsis, ExternalLink, Eye, EyeOff, FolderOpen, Globe2, KeyRound, Layers3, LoaderCircle,
   LockKeyhole, Pencil, Plus, Power, RefreshCw, Settings2, ShieldCheck, Sparkles,
   Terminal, Trash2, X, Zap,
 } from 'lucide-react';
 import { ALL_API_PROFILE_ID, REASONING_EFFORTS, type ReasoningEffort } from '../../shared/models';
-import type { ApiProfile, ApiProtocol, AppState, ConnectionResult, Language, ProviderPreset, SaveProfileInput, Settings, UpdateState } from '../../shared/types';
+import type { ApiProfile, ApiProtocol, ApiUsageStats, ApiUsageTotals, AppState, ConnectionResult, Language, ProviderPreset, SaveProfileInput, Settings, UpdateState } from '../../shared/types';
 import { PROVIDER_PRESETS } from '../../shared/provider-presets';
 import { translator, type Translate } from './i18n';
 import { friendlyError } from './errors';
@@ -14,6 +14,7 @@ import { friendlyError } from './errors';
 const api = window.agentSwitcher;
 const query = new URLSearchParams(window.location.search);
 const isManager = query.get('window') === 'settings';
+const usageSelection = '/usage';
 document.documentElement.classList.toggle('manager-window', isManager);
 
 const previewSettings: Settings = {
@@ -230,11 +231,94 @@ function Manager({ controller: c }: { controller: Controller }) {
       <button className="button add-profile-sidebar" disabled={!!c.busy || state.activeProfile === ALL_API_PROFILE_ID} onClick={() => select('new')}><Plus size={15} />{t('addProfile')}</button>
       <div className="sidebar-section-label">{t('apiProfiles')}<span>{profiles.length}</span></div>
       <nav className="profile-navigation" aria-label={t('apiProfiles')}>{profiles.map((profile) => <button key={profile.id} className={selection === profile.id ? 'selected' : ''} disabled={!!c.busy} onClick={() => select(profile.id)}><ProviderIcon preset={profile.preset} small /><span><strong>{profile.name}</strong><small>{host(profile.baseUrl)}</small></span>{state.activeProfile === profile.id && <span className="sidebar-active-dot" title={t('current')} />}</button>)}</nav>
-      <button className={`general-navigation ${selection === 'general' ? 'selected' : ''}`} disabled={!!c.busy} onClick={() => select('general')}><Settings2 size={16} />{t('general')}<ChevronRight size={13} /></button>
+      <nav className="manager-navigation" aria-label={t('settings')}>
+        <button className={selection === usageSelection ? 'selected' : ''} aria-current={selection === usageSelection ? 'page' : undefined} disabled={!!c.busy} onClick={() => select(usageSelection)}><ChartNoAxesColumn size={16} />{t('apiUsage')}<ChevronRight size={13} /></button>
+        <button className={selection === 'general' ? 'selected' : ''} aria-current={selection === 'general' ? 'page' : undefined} disabled={!!c.busy} onClick={() => select('general')}><Settings2 size={16} />{t('general')}<ChevronRight size={13} /></button>
+      </nav>
       <div className="sidebar-security"><LockKeyhole size={13} /><span>{t('localOnly')}</span></div>
     </aside>
-    {selection === 'general' ? <GeneralSettings key="general" controller={c} onDirty={(value) => { dirty.current = value; }} /> : <ProfileEditor key={selection} profile={selected} controller={c} onDirty={(value) => { dirty.current = value; }} onSaved={(id) => { dirty.current = false; setSelection(id); }} onDeleted={(next) => { dirty.current = false; setSelection(next.profiles[0]?.id ?? 'new'); }} />}
+    {selection === usageSelection ? <ApiUsage controller={c} /> : selection === 'general' ? <GeneralSettings key="general" controller={c} onDirty={(value) => { dirty.current = value; }} /> : <ProfileEditor key={selection} profile={selected} controller={c} onDirty={(value) => { dirty.current = value; }} onSaved={(id) => { dirty.current = false; setSelection(id); }} onDeleted={(next) => { dirty.current = false; setSelection(next.profiles[0]?.id ?? 'new'); }} />}
   </div>;
+}
+
+function ApiUsage({ controller: c }: { controller: Controller }) {
+  const { state, t } = c;
+  const [usage, setUsage] = useState<ApiUsageStats | null>(null);
+  const [request, setRequest] = useState<{ status: 'loading' | 'ready' } | { status: 'error'; error: unknown }>({ status: api ? 'loading' : 'ready' });
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    if (!api) return;
+    let ignore = false;
+    void api.getUsageStats().then((next) => {
+      if (ignore) return;
+      setUsage(next);
+      setRequest({ status: 'ready' });
+    }).catch((error: unknown) => {
+      if (!ignore) setRequest({ status: 'error', error: error ?? 'USAGE_STATS_READ_FAILED' });
+    });
+    return () => { ignore = true; };
+  }, [revision]);
+
+  const { status } = request;
+  const format = new Intl.NumberFormat(state.settings.language);
+  const percent = new Intl.NumberFormat(state.settings.language, { style: 'percent', maximumFractionDigits: 1 });
+  const cacheRate = (totals: ApiUsageTotals) => totals.cacheReportedInputTokens > 0
+    ? percent.format(totals.cachedInputTokens / totals.cacheReportedInputTokens)
+    : t('usageNoCacheData');
+  const profileNames = new Map(state.profiles.map((profile) => [profile.id, profile.name]));
+
+  return <section className="editor-column" aria-labelledby="api-usage-title">
+    <div className="editor-scroll">
+      <div className="editor-heading usage-heading">
+        <div><h1 id="api-usage-title">{t('apiUsage')}</h1><p>{t('usageScope')}</p></div>
+        <button className="button secondary" disabled={c.disabled || status === 'loading'} onClick={() => { setRequest({ status: 'loading' }); setRevision((previous) => previous + 1); }}>
+          {status === 'loading' ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}
+          {t('refreshUsage')}
+        </button>
+      </div>
+      {request.status === 'error' && <p className="usage-error" role="alert"><CircleAlert size={15} />{friendlyError(request.error, state.settings.language)}</p>}
+      {status === 'loading' && !usage?.requests && <p className="settings-section usage-empty" role="status">{t('usageLoading')}</p>}
+      {status === 'ready' && !usage?.requests && <p className="settings-section usage-empty" role="status">{t('usageEmpty')}</p>}
+      {usage && usage.requests > 0 && <>
+        <dl className="usage-totals" aria-label={t('usageTotals')}>
+          <div><dt>{t('usageRequests')}</dt><dd>{format.format(usage.requests)}</dd></div>
+          <div><dt>{t('usageInput')}</dt><dd>{format.format(usage.inputTokens)}</dd></div>
+          <div><dt>{t('usageOutput')}</dt><dd>{format.format(usage.outputTokens)}</dd></div>
+          <div><dt>{t('usageTotalTokens')}</dt><dd>{format.format(usage.inputTokens + usage.outputTokens)}</dd></div>
+          <div>
+            <dt>{t('usageCacheRate')}</dt><dd>{cacheRate(usage)}</dd>
+            {usage.cacheReportedInputTokens > 0 && <dd className="usage-cache-detail">{t('usageCacheDetail', { cached: format.format(usage.cachedInputTokens), reported: format.format(usage.cacheReportedInputTokens) })}</dd>}
+          </div>
+        </dl>
+        <section className="settings-section usage-models">
+          <div className="settings-section-heading"><h2 id="usage-models-title">{t('usageByModel')}</h2></div>
+          <table aria-labelledby="usage-models-title">
+            <thead><tr>
+              <th scope="col">{t('usageModel')}</th>
+              <th scope="col">{t('usageRequests')}</th>
+              <th scope="col">{t('usageInput')}</th>
+              <th scope="col">{t('usageOutput')}</th>
+              <th scope="col">{t('usageTotalTokens')}</th>
+              <th scope="col">{t('usageCacheRate')}</th>
+            </tr></thead>
+            <tbody>{usage.models.map((row) => <tr key={`${row.profileId}:${row.model}`}>
+              <th scope="row"><strong>{row.model}</strong><span title={row.profileId}>{profileNames.get(row.profileId) ?? t('usageDeletedConfiguration')}</span></th>
+              <td>{format.format(row.requests)}</td>
+              <td>{format.format(row.inputTokens)}</td>
+              <td>{format.format(row.outputTokens)}</td>
+              <td>{format.format(row.inputTokens + row.outputTokens)}</td>
+              <td>
+                {cacheRate(row)}
+                {row.cacheReportedInputTokens > 0 && <span className="usage-cache-detail" title={t('usageCacheDetail', { cached: format.format(row.cachedInputTokens), reported: format.format(row.cacheReportedInputTokens) })}>
+                  {format.format(row.cachedInputTokens)} / {format.format(row.cacheReportedInputTokens)}
+                </span>}
+              </td>
+            </tr>)}</tbody>
+          </table>
+        </section>
+      </>}
+    </div>
+  </section>;
 }
 
 interface ProfileDraft {

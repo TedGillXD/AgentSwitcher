@@ -49,6 +49,8 @@ const messages: Record<string, [string, string]> = {
   CUSTOM_HOME_STORE_UNSUPPORTED: ['Microsoft Store 安装仅支持默认 Codex 配置目录。', 'Microsoft Store installs require the default Codex home.'],
   LOGIN_REQUIRES_INSTALL: ['开机启动需要先打包并安装 AgentSwitcher。', 'Install the packaged app to enable launch at login.'],
   STORAGE_INVALID: ['本地设置文件损坏或版本不支持，原文件已保留。', 'Local settings are invalid or unsupported. The original file was preserved.'],
+  USAGE_STATS_READ_FAILED: ['无法读取本地 API 用量。', 'Could not read local API usage.'],
+  USAGE_STATS_WRITE_FAILED: ['无法保存本地 API 用量。请刷新重试。', 'Could not save local API usage. Refresh to retry.'],
   OPERATION_FAILED: ['操作未完成，请检查设置后重试。', 'The operation could not finish. Check your settings and retry.'],
 };
 

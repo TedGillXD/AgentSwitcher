@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ApiUsageSample } from '../shared/types';
 import { LocalBridge, type SingleBridgeOptions } from '../electron/bridge';
 import { listenOnLoopback } from '../electron/bridge/listen';
 
@@ -15,8 +16,8 @@ async function upstream(handler: (request: IncomingMessage, response: ServerResp
   return `http://127.0.0.1:${port}/provider/v1`;
 }
 
-async function proxy(baseUrl: string, overrides: Partial<SingleBridgeOptions> = {}): Promise<string> {
-  const bridge = new LocalBridge();
+async function proxy(baseUrl: string, overrides: Partial<SingleBridgeOptions> = {}, onUsage?: (sample: ApiUsageSample) => void): Promise<string> {
+  const bridge = new LocalBridge(onUsage);
   bridges.push(bridge);
   const { port } = await bridge.start({ apiKey, token, baseUrl, model: 'custom-code', models: ['custom-code', 'custom-fast'], protocol: 'chat_completions', ...overrides });
   return `http://127.0.0.1:${port}`;
@@ -136,6 +137,7 @@ describe('generic provider Chat Completions bridge', () => {
   });
 
   it('converts split UTF-8 SSE into sequential Responses text and reasoning events', async () => {
+    const recordUsage = vi.fn();
     const baseUrl = await upstream(async (request, response) => {
       expect(await read(request)).toMatchObject({ stream: true, stream_options: { include_usage: true } });
       response.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -143,7 +145,7 @@ describe('generic provider Chat Completions bridge', () => {
       for (let offset = 0; offset < raw.length; offset += 7) response.write(raw.subarray(offset, offset + 7));
       response.end();
     });
-    const response = await post(await proxy(baseUrl), { input: 'hello', stream: true });
+    const response = await post(await proxy(baseUrl, { usageProfileId: 'openai-compatible' }, recordUsage), { input: 'hello', stream: true });
     expect(response.headers.get('content-type')).toContain('text/event-stream');
     const result = events(await response.text());
     expect(result.map((event) => event.sequence_number)).toEqual(result.map((_, index) => index));
@@ -153,6 +155,21 @@ describe('generic provider Chat Completions bridge', () => {
     ], usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 } } });
     expect(result.some((event) => event.type === 'response.content_part.done')).toBe(true);
     expect(result.some((event) => event.type === 'response.reasoning_summary_text.done')).toBe(true);
+    await expect.poll(() => recordUsage.mock.calls).toEqual([[{
+      profileId: 'openai-compatible', model: 'custom-code', inputTokens: 4, outputTokens: 2, cachedInputTokens: null,
+    }]]);
+  });
+
+  it('records usage reported on the DeepSeek terminal choice with explicit cache hits and misses', async () => {
+    const recordUsage = vi.fn();
+    const baseUrl = await upstream((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      const final = { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 60, completion_tokens: 6, prompt_cache_hit_tokens: 40, prompt_cache_miss_tokens: 20 } };
+      response.end(sse({ content: 'Hello' }) + `data: ${JSON.stringify(final)}\n\ndata: [DONE]\n\n`);
+    });
+    const response = await post(await proxy(baseUrl, { usageProfileId: 'deepseek' }, recordUsage), { input: 'hello', model: 'custom-fast', stream: true });
+    expect(events(await response.text()).at(-1)).toMatchObject({ type: 'response.completed' });
+    await expect.poll(() => recordUsage.mock.calls).toEqual([[{ profileId: 'deepseek', model: 'custom-fast', inputTokens: 60, outputTokens: 6, cachedInputTokens: 40 }]]);
   });
 
   it('streams parallel function arguments and restores custom tool input without JSON wrapper', async () => {

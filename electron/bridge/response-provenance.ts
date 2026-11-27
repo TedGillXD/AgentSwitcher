@@ -1,10 +1,9 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { BridgeRequestError } from './errors';
+import { MAX_SSE_FRAME_LENGTH, parseSseFrame, SSE_FRAME_BREAK, SSE_LINE_BREAK } from './sse';
+import { responsesEventUsage, responsesUsage, type UsageObserver } from './usage';
 
 const MAX_JSON_BYTES = 64 * 1024 * 1024;
-const MAX_FRAME_LENGTH = 8 * 1024 * 1024;
-const SSE_LINE_BREAK = /\r\n|\n|\r/;
-const SSE_FRAME_BREAK = /(?:\r\n|\n|\r(?!\n))(?:\r\n|\n|\r(?!\n))/;
 const PROVENANCE_MARKER = 'agent-switcher-v1.';
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -91,7 +90,7 @@ function wrapEnvelope(value: unknown, key: Buffer): boolean {
   return changed;
 }
 
-export async function wrapRoutedJson(body: ReadableStream<Uint8Array>, key: Buffer): Promise<Buffer | string> {
+export async function wrapRoutedJson(body: ReadableStream<Uint8Array>, key: Buffer, observeUsage?: UsageObserver): Promise<Buffer | string> {
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let bytes = 0;
@@ -107,6 +106,7 @@ export async function wrapRoutedJson(body: ReadableStream<Uint8Array>, key: Buff
     let parsed: unknown;
     try { parsed = JSON.parse(raw.toString('utf8')); }
     catch { throw new BridgeRequestError(502, 'The provider returned invalid Responses JSON.'); }
+    observeUsage?.(responsesUsage(parsed));
     return wrapEnvelope(parsed, key) ? JSON.stringify(parsed) : raw;
   } finally {
     await reader.cancel().catch(() => undefined);
@@ -114,27 +114,17 @@ export async function wrapRoutedJson(body: ReadableStream<Uint8Array>, key: Buff
   }
 }
 
-function wrapFrame(frame: string, key: Buffer): string {
-  const lines = frame.split(SSE_LINE_BREAK);
-  const data: string[] = [];
-  const other: string[] = [];
-  let dataStart = -1;
-  for (const line of lines) {
-    if (line.startsWith('data:') || line === 'data') {
-      if (dataStart === -1) dataStart = other.length;
-      data.push(line.slice(5).replace(/^ /, ''));
-    } else other.push(line);
-  }
-  if (dataStart === -1) return frame;
-  let parsed: unknown;
-  try { parsed = JSON.parse(data.join('\n')); }
-  catch { return frame; }
-  if (!wrapEnvelope(parsed, key)) return frame;
-  other.splice(dataStart, 0, `data: ${JSON.stringify(parsed)}`);
+function wrapFrame(frame: string, key: Buffer, observeUsage?: UsageObserver): string {
+  const parsed = parseSseFrame(frame);
+  if (!parsed) return frame;
+  const { value, other, dataStart, event } = parsed;
+  observeUsage?.(responsesEventUsage(value, event));
+  if (!wrapEnvelope(value, key)) return frame;
+  other.splice(dataStart, 0, `data: ${JSON.stringify(value)}`);
   return other.join(SSE_LINE_BREAK.exec(frame)?.[0] ?? '\n');
 }
 
-export async function* wrapRoutedStream(body: ReadableStream<Uint8Array>, key: Buffer): AsyncGenerator<string> {
+export async function* wrapRoutedStream(body: ReadableStream<Uint8Array>, key: Buffer, observeUsage?: UsageObserver): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let pending = '';
@@ -144,14 +134,14 @@ export async function* wrapRoutedStream(body: ReadableStream<Uint8Array>, key: B
       pending += decoder.decode(value, { stream: !done });
       let separator: RegExpExecArray | null;
       while ((separator = SSE_FRAME_BREAK.exec(pending))) {
-        if (separator.index > MAX_FRAME_LENGTH) throw new BridgeRequestError(502, 'The provider response event is too large.');
-        yield wrapFrame(pending.slice(0, separator.index), key) + separator[0];
+        if (separator.index > MAX_SSE_FRAME_LENGTH) throw new BridgeRequestError(502, 'The provider response event is too large.');
+        yield wrapFrame(pending.slice(0, separator.index), key, observeUsage) + separator[0];
         pending = pending.slice(separator.index + separator[0].length);
       }
-      if (pending.length > MAX_FRAME_LENGTH) throw new BridgeRequestError(502, 'The provider response event is too large.');
+      if (pending.length > MAX_SSE_FRAME_LENGTH) throw new BridgeRequestError(502, 'The provider response event is too large.');
       if (done) break;
     }
-    if (pending) yield wrapFrame(pending, key);
+    if (pending) yield wrapFrame(pending, key, observeUsage);
   } finally {
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();

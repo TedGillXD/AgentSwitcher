@@ -1,5 +1,6 @@
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ApiUsageSample } from '../shared/types';
 import { LocalBridge, type BridgeModelRoute, type SingleBridgeOptions } from '../electron/bridge';
 import { listenOnLoopback } from '../electron/bridge/listen';
 
@@ -15,8 +16,8 @@ async function upstream(handler: (request: IncomingMessage, response: ServerResp
   return `http://127.0.0.1:${port}/provider/v1`;
 }
 
-async function proxy(baseUrl: string, overrides: Partial<SingleBridgeOptions> = {}): Promise<{ bridge: LocalBridge; url: string }> {
-  const bridge = new LocalBridge();
+async function proxy(baseUrl: string, overrides: Partial<SingleBridgeOptions> = {}, onUsage?: (sample: ApiUsageSample) => void): Promise<{ bridge: LocalBridge; url: string }> {
+  const bridge = new LocalBridge(onUsage);
   bridges.push(bridge);
   const { port } = await bridge.start({ token: proxyToken, apiKey: providerKey, baseUrl, model: 'deepseek-flash', ...overrides });
   return { bridge, url: `http://127.0.0.1:${port}` };
@@ -67,15 +68,17 @@ describe('LocalBridge credential proxy', () => {
   });
 
   it('preserves the requested Responses model and substitutes only the upstream credential', async () => {
+    const recordUsage = vi.fn(() => Promise.reject(new Error('usage store unavailable')));
+    const upstreamJson = '{ "id":"resp_test","output":[],"usage":{"input_tokens":11,"output_tokens":5} }';
     let received: { url?: string; headers?: IncomingMessage['headers']; body?: unknown } = {};
     const baseUrl = await upstream((request, response) => {
       void readBody(request).then((body) => {
         received = { url: request.url, headers: request.headers, body };
         response.writeHead(200, { 'Content-Type': 'application/json' });
-        response.end('{"id":"resp_test","output":[]}');
+        response.end(upstreamJson);
       });
     });
-    const { url, bridge } = await proxy(baseUrl);
+    const { url, bridge } = await proxy(baseUrl, { usageProfileId: 'deepseek' }, recordUsage);
     const payload = {
       model: 'deepseek-v4-pro',
       previous_response_id: 'resp_native_previous',
@@ -86,7 +89,10 @@ describe('LocalBridge credential proxy', () => {
     };
     const result = await post(url, payload, { 'X-Codex-Account-ID': 'must-not-leave-the-computer' });
     expect(result.status).toBe(200);
-    expect(await result.json()).toEqual({ id: 'resp_test', output: [] });
+    expect(await result.text()).toBe(upstreamJson);
+    await expect.poll(() => recordUsage.mock.calls).toEqual([[{
+      profileId: 'deepseek', model: 'deepseek-v4-pro', inputTokens: 11, outputTokens: 5, cachedInputTokens: null,
+    }]]);
     expect(received.url).toBe('/provider/v1/responses');
     expect(received.body).toEqual(payload);
     expect(received.headers?.authorization).toBe(`Bearer ${providerKey}`);
@@ -190,18 +196,27 @@ describe('LocalBridge credential proxy', () => {
   });
 
   it('preserves provider SSE frames and UTF-8 text without protocol conversion', async () => {
-    const frames = 'event: response.created\ndata: {"type":"response.created","sequence_number":0}\n\nevent: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"你好"}\n\nevent: response.completed\ndata: {"type":"response.completed"}\n\n';
+    const recordUsage = vi.fn();
+    const frames = [
+      'event: response.created\r\ndata: {"type":"response.created","response":{"usage":{"input_tokens":2,"output_tokens":0}}}\r\n\r\n',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"你好"}\n\n',
+      'event: response.completed\r\ndata: {"response":{"usage":{"input_tokens":30,\r\ndata: "output_tokens":12,"input_tokens_details":{"cached_tokens":0}}}}\r\n\r\n',
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":30,"output_tokens":12}}}\n\n',
+    ].join('');
     const baseUrl = await upstream((_request, response) => {
       response.writeHead(200, { 'Content-Type': 'text/event-stream' });
       const bytes = Buffer.from(frames);
-      response.write(bytes.subarray(0, bytes.length - 35));
-      response.end(bytes.subarray(bytes.length - 35));
+      for (let offset = 0; offset < bytes.length; offset += 7) response.write(bytes.subarray(offset, offset + 7));
+      response.end();
     });
-    const { url } = await proxy(baseUrl);
+    const { url } = await proxy(baseUrl, { usageProfileId: 'deepseek' }, recordUsage);
     const result = await post(url, { input: 'hello', stream: true });
     expect(result.headers.get('content-type')).toBe('text/event-stream');
     expect(result.headers.get('access-control-allow-origin')).toBeNull();
     expect(await result.text()).toBe(frames);
+    await expect.poll(() => recordUsage.mock.calls).toEqual([[{
+      profileId: 'deepseek', model: 'deepseek-flash', inputTokens: 30, outputTokens: 12, cachedInputTokens: 0,
+    }]]);
   });
 
   it('supports authenticated model discovery with a GET request', async () => {
@@ -381,27 +396,28 @@ describe('LocalBridge credential proxy', () => {
 
 describe('combined API model routes', () => {
   it('advertises local aliases and keeps duplicate upstream IDs on their own credentials and protocols', async () => {
+    const recordUsage = vi.fn();
     const calls: { provider: string; path: string | undefined; authorization: string | undefined; body: unknown }[] = [];
     const first = await upstream(async (request, response) => {
       calls.push({ provider: 'first', path: request.url, authorization: request.headers.authorization, body: await readBody(request) });
       response.writeHead(200, { 'Content-Type': 'application/json' });
-      response.end('{"model":"shared","output":[]}');
+      response.end('{"model":"shared","output":[],"usage":{"input_tokens":34,"output_tokens":4,"input_tokens_details":{"cached_tokens":8}}}');
     });
     const second = await upstream(async (request, response) => {
       calls.push({ provider: 'second', path: request.url, authorization: request.headers.authorization, body: await readBody(request) });
       if (request.url === '/provider/v1/responses') {
-        response.writeHead(404);
-        response.end();
+        response.writeHead(404, { 'Content-Type': 'application/json' });
+        response.end('{"usage":{"input_tokens":999,"output_tokens":999}}');
         return;
       }
       response.writeHead(200, { 'Content-Type': 'application/json' });
-      response.end('{"choices":[{"message":{"content":"via chat"},"finish_reason":"stop"}]}');
+      response.end('{"choices":[{"message":{"content":"via chat"},"finish_reason":"stop"}],"usage":{"prompt_tokens":62,"completion_tokens":5,"cached_tokens":27}}');
     });
     const routes: BridgeModelRoute[] = [
-      { slug: 'first/shared', upstreamModel: 'shared', baseUrl: first, apiKey: 'first-fixture-key', protocol: 'responses' },
-      { slug: 'second/shared', upstreamModel: 'shared', baseUrl: second, apiKey: 'second-fixture-key', protocol: 'auto' },
+      { slug: 'first/shared', upstreamModel: 'shared', baseUrl: first, apiKey: 'first-fixture-key', protocol: 'responses', profileId: 'first' },
+      { slug: 'second/shared', upstreamModel: 'shared', baseUrl: second, apiKey: 'second-fixture-key', protocol: 'auto', profileId: 'second' },
     ];
-    const bridge = new LocalBridge();
+    const bridge = new LocalBridge(recordUsage);
     bridges.push(bridge);
     const { port } = await bridge.start({ token: proxyToken, model: 'first/shared', routes });
     const url = `http://127.0.0.1:${port}`;
@@ -414,6 +430,7 @@ describe('combined API model routes', () => {
       expect((await post(url, body)).status).toBe(400);
     }
     expect(calls).toHaveLength(0);
+    expect(recordUsage).not.toHaveBeenCalled();
 
     const [responses, chat] = await Promise.all([
       post(url, { model: 'first/shared', input: 'Use first' }),
@@ -423,6 +440,9 @@ describe('combined API model routes', () => {
     expect(await responses.json()).toMatchObject({ model: 'shared' });
     expect(chat.status).toBe(200);
     expect(await chat.json()).toMatchObject({ model: 'second/shared' });
+    await expect.poll(() => recordUsage.mock.calls).toHaveLength(2);
+    expect(recordUsage).toHaveBeenCalledWith({ profileId: 'first', model: 'shared', inputTokens: 34, outputTokens: 4, cachedInputTokens: 8 });
+    expect(recordUsage).toHaveBeenCalledWith({ profileId: 'second', model: 'shared', inputTokens: 62, outputTokens: 5, cachedInputTokens: 27 });
     expect(calls.filter(({ provider }) => provider === 'first')).toMatchObject([
       { path: '/provider/v1/responses', authorization: 'Bearer first-fixture-key', body: { model: 'shared', input: 'Use first' } },
     ]);

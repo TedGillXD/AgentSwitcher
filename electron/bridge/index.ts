@@ -3,13 +3,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream } from 'node:stream/web';
-import type { ApiProtocol } from '../../shared/types';
+import type { ApiProtocol, ApiUsageSample } from '../../shared/types';
 import { availableDeepseekModels } from '../../shared/models';
 import { normalizeProviderBaseUrl } from '../../shared/provider-url';
 import { fromChatResponse, streamChatResponse, toChatRequest, type ChatRequest } from './chat-completions';
 import { BridgeRequestError as RequestError } from './errors';
 import { listenOnLoopback } from './listen';
 import { prepareRoutedInput, wrapRoutedJson, wrapRoutedStream } from './response-provenance';
+import { chatUsage, tapResponsesUsage, type UsageObserver } from './usage';
 
 interface BridgeListenerOptions {
   port?: number;
@@ -28,6 +29,7 @@ export interface SingleBridgeOptions extends BridgeListenerOptions {
   protocol?: ApiProtocol;
   /** Exact model allowlist. Omitted only for legacy DeepSeek configurations. */
   models?: string[];
+  usageProfileId?: string;
   routes?: never;
   continuationKey?: never;
 }
@@ -38,6 +40,7 @@ export interface BridgeModelRoute {
   baseUrl: string;
   apiKey: string;
   protocol: ApiProtocol;
+  profileId?: string;
 }
 
 export type BridgeOptions = SingleBridgeOptions | (BridgeListenerOptions & {
@@ -48,6 +51,7 @@ export type BridgeOptions = SingleBridgeOptions | (BridgeListenerOptions & {
   baseUrl?: never;
   protocol?: never;
   models?: never;
+  usageProfileId?: never;
 });
 
 interface Upstream {
@@ -59,6 +63,7 @@ interface Upstream {
 interface BoundModelRoute extends Upstream {
   upstreamModel: string;
   responseKey?: Buffer;
+  profileId?: string;
 }
 
 interface ModelRoutes {
@@ -83,7 +88,8 @@ function bindModelRoutes(options: BridgeOptions): ModelRoutes {
   if (options.routes !== undefined) {
     const continuationKey = options.continuationKey ?? options.token;
     if (!Array.isArray(options.routes) || options.baseUrl !== undefined || options.apiKey !== undefined ||
-      options.protocol !== undefined || options.models !== undefined || typeof continuationKey !== 'string' || continuationKey.length < 16) {
+      options.protocol !== undefined || options.models !== undefined || options.usageProfileId !== undefined ||
+      typeof continuationKey !== 'string' || continuationKey.length < 16) {
       throw new Error('The local proxy model routes are invalid.');
     }
     for (const route of options.routes) {
@@ -95,7 +101,7 @@ function bindModelRoutes(options: BridgeOptions): ModelRoutes {
       const responseKey = createHmac('sha256', continuationKey)
         .update(JSON.stringify([route.slug, upstream.base.href, upstream.apiKey, route.upstreamModel, upstream.protocol]))
         .digest();
-      bySlug.set(route.slug, { ...upstream, upstreamModel: route.upstreamModel, responseKey });
+      bySlug.set(route.slug, { ...upstream, upstreamModel: route.upstreamModel, responseKey, profileId: route.profileId });
     }
     if (!bySlug.has(options.model)) throw new Error('The local proxy default model is not routed.');
     return { bySlug, localModels: true, unsupportedModel: 'This model is not enabled for the combined API connection. Select a configured model in Codex.' };
@@ -107,7 +113,9 @@ function bindModelRoutes(options: BridgeOptions): ModelRoutes {
     throw new Error('The local proxy protocol or model list is invalid.');
   }
   const upstream = bindUpstream(options.baseUrl, options.apiKey, options.protocol);
-  for (const slug of models ?? availableDeepseekModels(model)) bySlug.set(slug, { ...upstream, upstreamModel: slug });
+  for (const slug of models ?? availableDeepseekModels(model)) {
+    bySlug.set(slug, { ...upstream, upstreamModel: slug, profileId: options.usageProfileId });
+  }
   const unsupportedModel = models
     ? 'This model is not enabled for this API connection. Select a configured model in Codex.'
     : 'This model is not enabled for this DeepSeek connection. Select a listed DeepSeek model in Codex.';
@@ -182,6 +190,8 @@ export class LocalBridge {
   private server: Server | undefined;
   private controllers = new Set<AbortController>();
 
+  constructor(private readonly onUsage?: (sample: ApiUsageSample) => void) {}
+
   isRunning(): boolean {
     return this.server?.listening ?? false;
   }
@@ -233,6 +243,7 @@ export class LocalBridge {
   private async handle(request: IncomingMessage, response: ServerResponse, options: BridgeListenerOptions, routes: ModelRoutes, port: number): Promise<void> {
     let controller: AbortController | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let observedUsage: ApiUsageSample | undefined;
     try {
       // Browsers must not be able to consume a locally stored credential, even
       // if a web page somehow discovers the proxy's port and bearer token.
@@ -293,7 +304,12 @@ export class LocalBridge {
       if (typeof slug !== 'string') throw new RequestError(400, routes.unsupportedModel);
       const provider = routes.bySlug.get(slug);
       if (!provider) throw new RequestError(400, routes.unsupportedModel);
-      const { base, apiKey, protocol, upstreamModel, responseKey } = provider;
+      const { base, apiKey, protocol, upstreamModel, responseKey, profileId } = provider;
+      const observeUsage: UsageObserver | undefined = responses && profileId && this.onUsage ? (usage) => {
+        if (!usage) return;
+        if (usage.cachedInputTokens === null && observedUsage?.inputTokens === usage.inputTokens && observedUsage.outputTokens === usage.outputTokens) return;
+        observedUsage = { profileId, model: upstreamModel, ...usage };
+      } : undefined;
       const toChat = (payload: Record<string, unknown>): ChatRequest =>
         toChatRequest(responseKey ? prepareRoutedInput(payload) : payload, upstreamModel, slug);
       const signal = controller.signal;
@@ -347,7 +363,7 @@ export class LocalBridge {
           }
           response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
           response.flushHeaders();
-          await streamChatResponse(upstream.body, chat, response, signal);
+          await streamChatResponse(upstream.body, chat, response, signal, observeUsage);
         } else {
           if (!contentType.startsWith('application/json')) {
             await upstream.body.cancel();
@@ -358,6 +374,7 @@ export class LocalBridge {
             if (signal.aborted) throw error;
             throw new RequestError(502, 'The provider returned invalid JSON.');
           }
+          observeUsage?.(chatUsage(value));
           const converted = fromChatResponse(value, chat);
           response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
           response.end(JSON.stringify(converted));
@@ -365,7 +382,7 @@ export class LocalBridge {
         return;
       }
       if (responseKey && contentType.startsWith('application/json')) {
-        const payload = await wrapRoutedJson(upstream.body, responseKey);
+        const payload = await wrapRoutedJson(upstream.body, responseKey, observeUsage);
         response.writeHead(upstream.status, { 'Content-Type': contentType, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
         response.end(payload);
         return;
@@ -377,9 +394,10 @@ export class LocalBridge {
       });
       response.flushHeaders();
       const stream = responseKey
-        ? Readable.from(wrapRoutedStream(upstream.body, responseKey))
+        ? Readable.from(wrapRoutedStream(upstream.body, responseKey, observeUsage))
         : Readable.fromWeb(upstream.body as ReadableStream<Uint8Array>);
-      await pipeline(stream, response);
+      if (observeUsage && !responseKey) await pipeline(stream, tapResponsesUsage(contentType.startsWith('text/event-stream'), observeUsage), response);
+      else await pipeline(stream, response);
     } catch (error) {
       if (response.headersSent) {
         response.destroy();
@@ -393,6 +411,8 @@ export class LocalBridge {
     } finally {
       if (timer) clearTimeout(timer);
       if (controller) this.controllers.delete(controller);
+      const sample = observedUsage;
+      if (sample) void Promise.resolve().then(() => this.onUsage?.(sample)).catch(() => undefined);
     }
   }
 }

@@ -17,6 +17,7 @@ ipcRenderer.on('switcher:edit-profile', (_event, id: string | null) => {
 
 const api: AgentSwitcherApi = {
   getState: () => invoke('switcher:state'),
+  getUsageStats: () => invoke('switcher:usage-stats'),
   saveSettings: (input) => invoke('switcher:save', input),
   saveProfile: (input) => invoke('switcher:save-profile', input),
   deleteProfile: (id) => invoke('switcher:delete-profile', id),
