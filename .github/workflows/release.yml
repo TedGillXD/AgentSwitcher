@@ -204,13 +204,9 @@ jobs:
           cat > release-notes.md <<'NOTES'
           Windows 和 macOS 安装包 / Windows and macOS installers.
 
-          0.2.8 修复显式填写 `http://` 的内网 API 地址在发起请求前被本地校验拒绝、立即显示“设置内容无效”的问题。HTTP / HTTPS 地址现在统一支持配置校验、模型发现、保存后重新加载和实际代理转发。
+          v0.2.9 修复自定义模型在 Codex 中缺少思考强度选项的问题。自定义 API、GLM 和 Kimi 配置可在“高级选项 → 支持的思考强度”中按模型勾选服务商支持的档位。保存并切换到该配置后，可在 Codex 中调整思考强度。
 
-          Version 0.2.8 fixes explicitly entered `http://` intranet API URLs being rejected by local validation before a request was sent, immediately showing “Invalid settings”. HTTP and HTTPS now work consistently for validation, model discovery, saving and reloading profiles, and proxy forwarding.
-
-          仍拒绝 URL 内嵌用户名/密码、查询参数和片段，请求不跟随重定向。优先使用 HTTPS；HTTP 会明文传输 API Key 和请求内容，仅在受信任网络中使用。
-
-          URLs with embedded credentials, query parameters or fragments remain rejected, and requests do not follow redirects. Prefer HTTPS; HTTP sends API keys and request content in plaintext and should only be used on trusted networks.
+          v0.2.9 restores reasoning effort options in Codex for custom models. In Advanced options → Supported reasoning efforts, select the levels your provider supports for each model in a Custom API, GLM, or Kimi profile. Save and switch to that profile to adjust reasoning effort in Codex.
 
           - Windows x64: Intel / AMD PC；Windows arm64: ARM PC。
           - macOS x64: Intel Mac；macOS arm64: Apple Silicon (M1 及更新)。
